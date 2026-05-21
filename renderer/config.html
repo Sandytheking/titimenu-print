@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TitiMenu Print Bridge — Configuración</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #0a0a0a;
+      color: #ffffff;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 32px 24px;
+      user-select: none;
+    }
+
+    .logo {
+      font-size: 28px;
+      font-weight: 800;
+      color: #e53e3e;
+      letter-spacing: -1px;
+      margin-bottom: 4px;
+    }
+
+    .logo span { color: #fff; }
+
+    .subtitle {
+      font-size: 12px;
+      color: #555;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      margin-bottom: 32px;
+    }
+
+    .status-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: #141414;
+      border: 1px solid #222;
+      border-radius: 8px;
+      padding: 10px 16px;
+      margin-bottom: 28px;
+      width: 100%;
+      max-width: 360px;
+    }
+
+    .status-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #e53e3e;
+      flex-shrink: 0;
+      transition: background 0.3s;
+    }
+
+    .status-dot.connected { background: #48bb78; box-shadow: 0 0 6px #48bb78; }
+
+    .status-text {
+      font-size: 13px;
+      color: #888;
+    }
+
+    .form {
+      width: 100%;
+      max-width: 360px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    label {
+      font-size: 12px;
+      color: #888;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+    }
+
+    input, select {
+      background: #141414;
+      border: 1px solid #2a2a2a;
+      border-radius: 8px;
+      color: #fff;
+      font-size: 14px;
+      padding: 12px 14px;
+      outline: none;
+      transition: border-color 0.2s;
+      width: 100%;
+      appearance: none;
+    }
+
+    input::placeholder { color: #444; }
+
+    input:focus, select:focus {
+      border-color: #e53e3e;
+    }
+
+    select {
+      cursor: pointer;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23888' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 14px center;
+      padding-right: 36px;
+    }
+
+    select option {
+      background: #141414;
+      color: #fff;
+    }
+
+    .buttons {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-top: 8px;
+    }
+
+    .btn {
+      padding: 13px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      transition: opacity 0.2s, transform 0.1s;
+      letter-spacing: 0.3px;
+    }
+
+    .btn:active { transform: scale(0.98); }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .btn-primary {
+      background: #e53e3e;
+      color: #fff;
+    }
+
+    .btn-primary:hover:not(:disabled) { background: #c53030; }
+
+    .btn-secondary {
+      background: #1a1a1a;
+      color: #aaa;
+      border: 1px solid #2a2a2a;
+    }
+
+    .btn-secondary:hover:not(:disabled) {
+      background: #222;
+      color: #fff;
+    }
+
+    .message {
+      font-size: 12px;
+      text-align: center;
+      padding: 10px;
+      border-radius: 6px;
+      display: none;
+    }
+
+    .message.success { background: #1a2e1a; color: #68d391; border: 1px solid #276749; }
+    .message.error   { background: #2d1a1a; color: #fc8181; border: 1px solid #742a2a; }
+    .message.show    { display: block; }
+
+    .version {
+      position: fixed;
+      bottom: 12px;
+      color: #333;
+      font-size: 11px;
+    }
+  </style>
+</head>
+<body>
+  <div class="logo">Titi<span>Menu</span></div>
+  <div class="subtitle">Print Bridge</div>
+
+  <div class="status-bar">
+    <div class="status-dot" id="statusDot"></div>
+    <span class="status-text" id="statusText">Desconectado</span>
+  </div>
+
+  <form class="form" id="configForm" onsubmit="return false">
+    <div class="field">
+      <label>Business ID</label>
+      <input
+        type="text"
+        id="businessId"
+        placeholder="Pega tu Business ID aquí"
+        autocomplete="off"
+        spellcheck="false"
+      />
+    </div>
+
+    <div class="field">
+      <label>Nombre del negocio</label>
+      <input
+        type="text"
+        id="businessName"
+        placeholder="Ej: Restaurant El Rincón"
+        autocomplete="off"
+      />
+    </div>
+
+    <div class="field">
+      <label>Impresora</label>
+      <select id="printerSelect">
+        <option value="">Cargando impresoras...</option>
+      </select>
+    </div>
+
+    <div class="buttons">
+      <button class="btn btn-primary" id="saveBtn" onclick="saveConfig()">
+        Guardar y conectar
+      </button>
+      <button class="btn btn-secondary" id="testBtn" onclick="testPrint()">
+        Probar impresión
+      </button>
+    </div>
+
+    <div class="message" id="message"></div>
+  </form>
+
+  <div class="version">v1.0.0</div>
+
+  <script>
+    let currentStatus = false
+
+    async function init() {
+      await loadPrinters()
+      await loadConfig()
+      listenStatus()
+    }
+
+    async function loadPrinters() {
+      const select = document.getElementById('printerSelect')
+      try {
+        const printers = await window.electronAPI.getPrinters()
+        select.innerHTML = ''
+        if (printers.length === 0) {
+          select.innerHTML = '<option value="">Sin impresoras detectadas</option>'
+          return
+        }
+        printers.forEach(p => {
+          const opt = document.createElement('option')
+          opt.value = p.name
+          opt.textContent = p.displayName || p.name
+          select.appendChild(opt)
+        })
+      } catch (e) {
+        select.innerHTML = '<option value="">Error al cargar</option>'
+      }
+    }
+
+    async function loadConfig() {
+      try {
+        const config = await window.electronAPI.getConfig()
+        if (config.businessId) document.getElementById('businessId').value = config.businessId
+        if (config.businessName) document.getElementById('businessName').value = config.businessName
+        if (config.printerName) {
+          const sel = document.getElementById('printerSelect')
+          for (let opt of sel.options) {
+            if (opt.value === config.printerName) { sel.value = config.printerName; break }
+          }
+        }
+      } catch (_) {}
+    }
+
+    function listenStatus() {
+      window.electronAPI.onStatusChange((connected) => {
+        updateStatus(connected)
+      })
+      window.electronAPI.getStatus().then(s => updateStatus(s))
+    }
+
+    function updateStatus(connected) {
+      currentStatus = connected
+      const dot = document.getElementById('statusDot')
+      const text = document.getElementById('statusText')
+      if (connected) {
+        dot.classList.add('connected')
+        text.textContent = 'Conectado a TitiMenu'
+      } else {
+        dot.classList.remove('connected')
+        text.textContent = 'Desconectado'
+      }
+    }
+
+    async function saveConfig() {
+      const businessId = document.getElementById('businessId').value.trim()
+      const businessName = document.getElementById('businessName').value.trim()
+      const printerName = document.getElementById('printerSelect').value
+
+      if (!businessId) { showMessage('Ingresa tu Business ID', 'error'); return }
+      if (!businessName) { showMessage('Ingresa el nombre del negocio', 'error'); return }
+      if (!printerName) { showMessage('Selecciona una impresora', 'error'); return }
+
+      const btn = document.getElementById('saveBtn')
+      btn.disabled = true
+      btn.textContent = 'Conectando...'
+
+      try {
+        await window.electronAPI.saveConfig({ businessId, businessName, printerName })
+        showMessage('¡Configuración guardada! Conectando...', 'success')
+      } catch (e) {
+        showMessage('Error al guardar: ' + e.message, 'error')
+      } finally {
+        btn.disabled = false
+        btn.textContent = 'Guardar y conectar'
+      }
+    }
+
+    async function testPrint() {
+      const btn = document.getElementById('testBtn')
+      btn.disabled = true
+      btn.textContent = 'Imprimiendo...'
+      try {
+        const result = await window.electronAPI.testPrint()
+        if (result.success) {
+          showMessage('Página de prueba enviada', 'success')
+        } else {
+          showMessage('Error: ' + (result.error || 'Impresora no disponible'), 'error')
+        }
+      } catch (e) {
+        showMessage('Error: ' + e.message, 'error')
+      } finally {
+        btn.disabled = false
+        btn.textContent = 'Probar impresión'
+      }
+    }
+
+    function showMessage(text, type) {
+      const el = document.getElementById('message')
+      el.textContent = text
+      el.className = `message ${type} show`
+      setTimeout(() => el.classList.remove('show'), 4000)
+    }
+
+    init()
+  </script>
+</body>
+</html>
