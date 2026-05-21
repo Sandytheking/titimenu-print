@@ -1,4 +1,4 @@
-const { ThermalPrinter, PrinterTypes, CharacterSet, BreakLine } = require('node-thermal-printer')
+const { printer: ThermalPrinter, types: PrinterTypes, BreakLine } = require('node-thermal-printer')
 const { exec } = require('child_process')
 const { promisify } = require('util')
 const fs = require('fs')
@@ -32,37 +32,21 @@ async function getUSBPrinters() {
 
   try {
     if (platform === 'darwin') {
-      const { stdout } = await execAsync('lpstat -a 2>/dev/null || echo ""')
-      const lines = stdout.split('\n').filter(l => l.trim())
-      lines.forEach(line => {
-        const name = line.split(' ')[0]
+      const { stdout } = await execAsync("lpstat -p 2>/dev/null | awk '{print $2}' || echo ''")
+      stdout.split('\n').forEach(name => {
+        name = name.trim()
         if (name) printers.push({ name, displayName: name })
       })
-      try {
-        const { stdout: spOut } = await execAsync(
-          "system_profiler SPUSBDataType 2>/dev/null | grep -A5 'Printer' | grep 'Product ID\\|Manufacturer\\|Product' | head -20"
-        )
-        if (spOut.trim() && printers.length === 0) {
-          printers.push({ name: 'USB_PRINTER', displayName: 'USB Thermal Printer (detected)' })
-        }
-      } catch (_) {}
     } else if (platform === 'win32') {
-      const { stdout } = await execAsync(
-        'wmic printer get Name,PortName /format:csv 2>nul'
-      )
-      const lines = stdout.split('\n').filter(l => l.includes(','))
-      lines.slice(1).forEach(line => {
-        const parts = line.split(',')
-        if (parts.length >= 3) {
-          const name = parts[2] ? parts[2].trim() : ''
-          if (name) printers.push({ name, displayName: name })
-        }
+      const { stdout } = await execAsync('wmic printer get Name /format:list 2>nul')
+      stdout.split('\n').forEach(line => {
+        const name = line.replace(/^Name=/, '').trim()
+        if (name) printers.push({ name, displayName: name })
       })
     } else {
-      const { stdout } = await execAsync('lpstat -a 2>/dev/null || echo ""')
-      const lines = stdout.split('\n').filter(l => l.trim())
-      lines.forEach(line => {
-        const name = line.split(' ')[0]
+      const { stdout } = await execAsync("lpstat -p 2>/dev/null | awk '{print $2}' || echo ''")
+      stdout.split('\n').forEach(name => {
+        name = name.trim()
         if (name) printers.push({ name, displayName: name })
       })
     }
@@ -109,12 +93,15 @@ function formatMoney(amount) {
 
 // ─── Real printer factory ─────────────────────────────────────────────────────
 
+const IP_RE = /^(\d{1,3}\.){3}\d{1,3}$/
+
 async function createPrinter(printerName) {
-  const platform = process.platform
   let interfaceStr
 
-  if (platform === 'win32') {
-    interfaceStr = `\\\\localhost\\${printerName}`
+  if (IP_RE.test(printerName.trim())) {
+    interfaceStr = `tcp://${printerName.trim()}:9100`
+  } else if (process.platform === 'win32') {
+    interfaceStr = `\\\\.\\${printerName}`
   } else {
     interfaceStr = `printer:${printerName}`
   }
@@ -122,7 +109,9 @@ async function createPrinter(printerName) {
   return new ThermalPrinter({
     type: PrinterTypes.EPSON,
     interface: interfaceStr,
-    characterSet: CharacterSet.PC858_EURO,
+    characterSet: 'PC858_EURO',
+    removeSpecialCharacters: true,
+    lineCharacter: '-',
     breakLine: BreakLine.WORD,
     options: { timeout: 5000 }
   })
