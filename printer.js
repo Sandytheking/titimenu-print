@@ -140,7 +140,8 @@ async function printPOSReceipt(order, printerName, businessInfo) {
   const LINE = '================================'
   const DASH = '--------------------------------'
   const W = 32
-  const dt = order.created_at || new Date().toISOString()
+  const now = new Date()
+  const dateStr = now.toLocaleDateString('es-DO', { day: '2-digit', month: '2-digit', year: 'numeric' }) + '  ' + now.toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' })
   const items = order.items || order.order_items || []
   const total = parseFloat(order.total || order.total_amount || 0)
   const tip = parseFloat(order.tip_amount || 0)
@@ -165,7 +166,7 @@ async function printPOSReceipt(order, printerName, businessInfo) {
     ...(rnc ? [center(`RNC: ${rnc}`, W)] : []),
     ...(address ? [center(address, W)] : []),
     center(`POS #${posNum}`, W),
-    center(`${formatDate(dt)}  ${formatTime(dt)}`, W),
+    center(dateStr, W),
     LINE,
     ...items.map(item => {
       const left = `${item.quantity || item.qty || 1}x ${item.name || item.product_name || ''}`
@@ -202,7 +203,7 @@ async function printPOSReceipt(order, printerName, businessInfo) {
   if (rnc) printer.println(center(`RNC: ${rnc}`, W))
   if (address) printer.println(center(address, W))
   printer.println(center(`POS #${posNum}`, W))
-  printer.println(center(`${formatDate(dt)}  ${formatTime(dt)}`, W))
+  printer.println(center(dateStr, W))
   printer.println(LINE)
   printer.alignLeft()
   items.forEach(item => {
@@ -231,7 +232,8 @@ async function printPOSReceipt(order, printerName, businessInfo) {
 
 async function printTableComanda(order, printerName, businessName) {
   const LINE = '================================'
-  const dt = order.created_at || new Date().toISOString()
+  const now = new Date()
+  const dateStr = now.toLocaleDateString('es-DO', { day: '2-digit', month: '2-digit', year: 'numeric' }) + '  ' + now.toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' })
   const tableLabel = order.table_label || order.table_number || order.table_id || '?'
   const shortId = (order.id || '000000').slice(-6).toUpperCase()
   const items = order.items || order.order_items || []
@@ -243,7 +245,7 @@ async function printTableComanda(order, printerName, businessName) {
     const lines = [
       LINE,
       center(`** COMANDA - MESA ${tableLabel} **`),
-      center(`${formatDate(dt)}  ${formatTime(dt)}`),
+      center(dateStr),
       LINE,
       ...(kitchenItems.length > 0 ? ['--- COCINA ---', ...kitchenItems.map(i => `${i.quantity || i.qty || 1}x ${i.name || i.product_name || ''}`)] : []),
       ...(barItems.length > 0 ? ['--- BAR ---', ...barItems.map(i => `${i.quantity || i.qty || 1}x ${i.name || i.product_name || ''}`)] : []),
@@ -265,7 +267,7 @@ async function printTableComanda(order, printerName, businessName) {
   printer.bold(true)
   printer.println(center(`** COMANDA - MESA ${tableLabel} **`))
   printer.bold(false)
-  printer.println(center(`${formatDate(dt)}  ${formatTime(dt)}`))
+  printer.println(center(dateStr))
   printer.println(LINE)
   printer.alignLeft()
 
@@ -299,7 +301,8 @@ async function printDeliveryTicket(order, printerName, businessName) {
   const LINE = '================================'
   const DASH = '--------------------------------'
   const W = 32
-  const dt = order.created_at || new Date().toISOString()
+  const now = new Date()
+  const dateStr = now.toLocaleDateString('es-DO', { day: '2-digit', month: '2-digit', year: 'numeric' }) + '  ' + now.toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' })
   const typeLabel = (order.order_type || 'delivery').toUpperCase()
   const customerName = order.customer_name || order.client_name || 'Cliente'
   const customerPhone = order.customer_phone || order.phone || order.tel || 'N/A'
@@ -310,7 +313,7 @@ async function printDeliveryTicket(order, printerName, businessName) {
     const lines = [
       LINE,
       center(`** ${typeLabel} **`),
-      center(`${formatDate(dt)}  ${formatTime(dt)}`),
+      center(dateStr),
       LINE,
       `Cliente: ${customerName}`,
       `Tel: ${customerPhone}`,
@@ -339,7 +342,7 @@ async function printDeliveryTicket(order, printerName, businessName) {
   printer.bold(true)
   printer.println(center(`** ${typeLabel} **`))
   printer.bold(false)
-  printer.println(center(`${formatDate(dt)}  ${formatTime(dt)}`))
+  printer.println(center(dateStr))
   printer.println(LINE)
   printer.alignLeft()
   printer.println(`Cliente: ${customerName}`)
@@ -416,7 +419,7 @@ async function printFiscalReceipt(data, printerName) {
   const total = parseFloat(data.total || 0)
   const tip = parseFloat(data.tip_amount || 0)
   const hasTip = tip > 0
-  const dt = data.date || new Date().toISOString()
+  const dateStr = new Date().toLocaleDateString('es-DO', { day: '2-digit', month: '2-digit', year: 'numeric' })
 
   const lines = [
     LINE,
@@ -428,7 +431,7 @@ async function printFiscalReceipt(data, printerName) {
     center('COMPROBANTE FISCAL', W),
     center(ncf, W),
     center(ncfLabel, W),
-    `Fecha: ${formatDate(dt)}`,
+    `Fecha: ${dateStr}`,
     LINE,
     ...items.map(item => {
       const left = `${item.qty || 1}x ${item.name || ''}`
@@ -474,7 +477,7 @@ async function printFiscalReceipt(data, printerName) {
   printer.println(center(ncf, W))
   printer.println(center(ncfLabel, W))
   printer.alignLeft()
-  printer.println(`Fecha: ${formatDate(dt)}`)
+  printer.println(`Fecha: ${dateStr}`)
   printer.println(LINE)
   items.forEach(item => {
     const left = `${item.qty || 1}x ${item.name || ''}`
