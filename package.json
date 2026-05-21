@@ -33,6 +33,7 @@
     "mac": {
       "category": "public.app-category.utilities",
       "icon": "assets/icon.icns",
+      "artifactName": "TitiMenu-Print-Bridge-${version}-${arch}.${ext}",
       "target": [
         {
           "target": "dmg",
@@ -45,6 +46,7 @@
     },
     "win": {
       "icon": "assets/icon.ico",
+      "artifactName": "TitiMenu-Print-Bridge-Setup-${version}.${ext}",
       "target": [
         {
           "target": "nsis",
