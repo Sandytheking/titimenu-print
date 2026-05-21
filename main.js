@@ -1,4 +1,5 @@
 const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, Notification, dialog } = require('electron')
+const { autoUpdater } = require('electron-updater')
 const path = require('path')
 const http = require('http')
 const Store = require('electron-store')
@@ -12,6 +13,49 @@ let configWindow = null
 let isConnected = false
 let httpServer = null
 let activePort = null
+let updateReady = false
+
+// ─── Auto-updater ─────────────────────────────────────────────────────────────
+
+autoUpdater.autoDownload = true
+autoUpdater.autoInstallOnAppQuit = true
+
+autoUpdater.setFeedURL({
+  provider: 'github',
+  owner: 'Sandytheking',
+  repo: 'titimenu-print',
+  private: false,
+})
+
+autoUpdater.on('checking-for-update', () => {
+  sendLog('Buscando actualizaciones...')
+})
+
+autoUpdater.on('update-available', (info) => {
+  sendLog(`Nueva versión disponible: v${info.version}`)
+  new Notification({
+    title: 'TitiMenu Print Bridge',
+    body: `Descargando actualización v${info.version}`
+  }).show()
+})
+
+autoUpdater.on('update-not-available', () => {
+  sendLog('TitiMenu Print Bridge está actualizado')
+})
+
+autoUpdater.on('update-downloaded', (info) => {
+  updateReady = true
+  sendLog(`✅ Actualización v${info.version} lista — se instalará al cerrar`)
+  new Notification({
+    title: 'TitiMenu Print Bridge',
+    body: `Actualización v${info.version} lista. Reinicia para aplicarla.`
+  }).show()
+  updateTray()
+})
+
+autoUpdater.on('error', (err) => {
+  sendLog(`Error de actualización: ${err.message}`)
+})
 
 // ─── Tray icons (base64 inline so no external assets needed at runtime) ──────
 
@@ -69,6 +113,23 @@ function updateTray() {
       : 'TitiMenu Print Bridge — Desconectado'
   )
 
+  const updateItems = updateReady
+    ? [
+        { type: 'separator' },
+        {
+          label: '⬆️ Instalar actualización',
+          click: () => autoUpdater.quitAndInstall()
+        }
+      ]
+    : [
+        {
+          label: '🔄 Buscar actualizaciones',
+          click: () => {
+            try { autoUpdater.checkForUpdatesAndNotify() } catch (e) { sendLog(`Error de actualización: ${e.message}`) }
+          }
+        }
+      ]
+
   const menu = Menu.buildFromTemplate([
     {
       label: isConnected ? '● Conectado' : '○ Desconectado',
@@ -106,6 +167,7 @@ function updateTray() {
         }
       }
     },
+    ...updateItems,
     { type: 'separator' },
     { label: 'Salir', click: () => app.quit() }
   ])
@@ -411,6 +473,14 @@ app.whenReady().then(async () => {
   }
 
   await startHttpServer()
+
+  setTimeout(() => {
+    try { autoUpdater.checkForUpdatesAndNotify() } catch (e) { sendLog(`Error de actualización: ${e.message}`) }
+  }, 10000)
+
+  setInterval(() => {
+    try { autoUpdater.checkForUpdatesAndNotify() } catch (e) { sendLog(`Error de actualización: ${e.message}`) }
+  }, 4 * 60 * 60 * 1000)
 })
 
 app.on('window-all-closed', () => {
