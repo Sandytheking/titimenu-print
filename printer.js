@@ -145,9 +145,16 @@ async function printPOSReceipt(order, printerName, businessInfo) {
   const total = parseFloat(order.total || order.total_amount || 0)
   const tip = parseFloat(order.tip_amount || 0)
   const hasTip = tip > 0
-  const subtotal = hasTip ? parseFloat(order.subtotal || (total - tip)) : 0
+  const discount = parseFloat(order.discount_amount || 0)
+  const hasDiscount = discount > 0
+  const showBreakdown = hasTip || hasDiscount
+  const subtotal = showBreakdown
+    ? parseFloat(order.subtotal || (total + discount - tip))
+    : 0
   const tipPct = hasTip && order.tip_pct ? parseFloat(order.tip_pct) : null
   const tipLabel = tipPct ? `Propina (${tipPct}%):` : 'Propina:'
+  const discountPct = hasDiscount && order.discount_pct ? parseFloat(order.discount_pct) : null
+  const discountLabel = discountPct ? `Descuento (${discountPct}%):` : 'Descuento:'
   const payMethod = order.payment_method || 'Efectivo'
   const posNum = order.order_number || order.id?.slice(-6) || '000'
 
@@ -167,9 +174,10 @@ async function printPOSReceipt(order, printerName, businessInfo) {
       return left + ' '.repeat(Math.max(1, spaces)) + right
     }),
     DASH,
-    ...(hasTip ? [
+    ...(showBreakdown ? [
       pad('SUBTOTAL:', 16) + pad(`RD$${formatMoney(subtotal)}`, 16, true),
-      pad(tipLabel, 16) + pad(`+RD$${formatMoney(tip)}`, 16, true),
+      ...(hasDiscount ? [pad(discountLabel, 16) + pad(`-RD$${formatMoney(discount)}`, 16, true)] : []),
+      ...(hasTip ? [pad(tipLabel, 16) + pad(`+RD$${formatMoney(tip)}`, 16, true)] : []),
     ] : []),
     pad('TOTAL:', 16) + pad(`RD$${formatMoney(total)}`, 16, true),
     `Pago: ${payMethod}`,
@@ -204,9 +212,10 @@ async function printPOSReceipt(order, printerName, businessInfo) {
     printer.println(left + ' '.repeat(Math.max(1, spaces)) + right)
   })
   printer.println(DASH)
-  if (hasTip) {
+  if (showBreakdown) {
     printer.println(pad('SUBTOTAL:', 16) + pad(`RD$${formatMoney(subtotal)}`, 16, true))
-    printer.println(pad(tipLabel, 16) + pad(`+RD$${formatMoney(tip)}`, 16, true))
+    if (hasDiscount) printer.println(pad(discountLabel, 16) + pad(`-RD$${formatMoney(discount)}`, 16, true))
+    if (hasTip) printer.println(pad(tipLabel, 16) + pad(`+RD$${formatMoney(tip)}`, 16, true))
   }
   printer.println(pad('TOTAL:', 16) + pad(`RD$${formatMoney(total)}`, 16, true))
   printer.println(`Pago: ${payMethod}`)

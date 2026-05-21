@@ -243,6 +243,8 @@ async function handleRequest(req, res) {
         total: data.total,
         tip_amount: data.tip_amount,
         tip_pct: data.tip_pct,
+        discount_amount: data.discount_amount,
+        discount_pct: data.discount_pct,
         payment_method: data.payment_method,
         created_at: data.date
       }
