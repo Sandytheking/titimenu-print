@@ -1,14 +1,17 @@
 const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, Notification, dialog } = require('electron')
 const path = require('path')
+const http = require('http')
 const Store = require('electron-store')
-const { getUSBPrinters, printPOSReceipt, printTableComanda, printDeliveryTicket, printTestPage } = require('./printer')
-const { setCallbacks, startListening, disconnect } = require('./supabase')
+const { getUSBPrinters, printPOSReceipt, printFiscalReceipt, printTableComanda, printDeliveryTicket, printTestPage, TEST_PRINTER_NAME } = require('./printer')
+const { setCallbacks, startListening, disconnect, fetchBusinessInfo } = require('./supabase')
 
 const store = new Store()
 
 let tray = null
 let configWindow = null
 let isConnected = false
+let httpServer = null
+let activePort = null
 
 // ─── Tray icons (base64 inline so no external assets needed at runtime) ──────
 
@@ -72,7 +75,7 @@ function updateTray() {
       enabled: false
     },
     { type: 'separator' },
-    { label: 'Configuración', click: () => createConfigWindow() },
+    { label: 'Abrir configuración', click: () => createConfigWindow() },
     {
       label: 'Estado',
       click: () => {
@@ -96,6 +99,7 @@ function updateTray() {
         const businessId = store.get('businessId')
         if (businessId) {
           disconnect()
+          setCallbacks({ onStatus: onStatusChange, onOrder: onNewOrder, onLogger: sendLog })
           startListening(businessId)
         } else {
           createConfigWindow()
@@ -110,6 +114,12 @@ function updateTray() {
 }
 
 // ─── Connection Status ────────────────────────────────────────────────────────
+
+function sendLog(text) {
+  if (configWindow && !configWindow.isDestroyed()) {
+    configWindow.webContents.send('log-message', text)
+  }
+}
 
 function onStatusChange(connected) {
   const wasConnected = isConnected
@@ -142,13 +152,28 @@ async function onNewOrder(type, order) {
     return
   }
 
+  const testMode = printerName === TEST_PRINTER_NAME
+
   try {
     if (type === 'pos') {
-      await printPOSReceipt(order, printerName, businessName)
+      const businessInfo = {
+        name: businessName,
+        legalName: store.get('businessLegalName', ''),
+        rnc: store.get('businessRnc', ''),
+        address: store.get('businessAddress', '')
+      }
+      await printPOSReceipt(order, printerName, businessInfo)
     } else if (type === 'table') {
       await printTableComanda(order, printerName, businessName)
     } else if (type === 'delivery') {
       await printDeliveryTicket(order, printerName, businessName)
+    }
+
+    if (testMode) {
+      new Notification({
+        title: 'Impresión simulada',
+        body: 'Ver /tmp/titimenu-print-test.txt'
+      }).show()
     }
   } catch (err) {
     console.error('Print error:', err.message)
@@ -161,19 +186,173 @@ async function onNewOrder(type, order) {
 
 // ─── IPC Handlers ─────────────────────────────────────────────────────────────
 
+// ─── HTTP Server ──────────────────────────────────────────────────────────────
+
+function setCorsHeaders(res) {
+  res.setHeader('Access-Control-Allow-Origin', '*')
+  res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS')
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+}
+
+function parseBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = ''
+    req.on('data', chunk => { body += chunk })
+    req.on('end', () => {
+      try { resolve(JSON.parse(body || '{}')) }
+      catch (e) { reject(new Error('JSON inválido en el body')) }
+    })
+    req.on('error', reject)
+  })
+}
+
+async function handleRequest(req, res) {
+  setCorsHeaders(res)
+
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204)
+    res.end()
+    return
+  }
+
+  const urlPath = req.url.split('?')[0]
+
+  try {
+    if (req.method === 'GET' && urlPath === '/status') {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({
+        connected: isConnected,
+        printer: store.get('printerName', ''),
+        business: store.get('businessName', '')
+      }))
+      return
+    }
+
+    if (req.method === 'POST' && urlPath === '/print-receipt') {
+      const data = await parseBody(req)
+      const printerName = store.get('printerName')
+      if (!printerName) {
+        res.writeHead(503, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'No hay impresora configurada' }))
+        return
+      }
+      const order = {
+        order_number: data.order_number,
+        items: (data.items || []).map(i => ({ name: i.name, qty: i.qty, price: i.price, subtotal: i.subtotal })),
+        subtotal: data.subtotal,
+        total: data.total,
+        tip_amount: data.tip_amount,
+        tip_pct: data.tip_pct,
+        payment_method: data.payment_method,
+        created_at: data.date
+      }
+      const businessInfo = {
+        name: data.business_name || store.get('businessName', 'Mi Negocio'),
+        legalName: store.get('businessLegalName', ''),
+        rnc: store.get('businessRnc', ''),
+        address: store.get('businessAddress', '')
+      }
+      await printPOSReceipt(order, printerName, businessInfo)
+      sendLog(`HTTP: Recibo impreso — Orden #${data.order_number}`)
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ success: true }))
+      return
+    }
+
+    if (req.method === 'POST' && urlPath === '/print-fiscal') {
+      const data = await parseBody(req)
+      const printerName = store.get('printerName')
+      if (!printerName) {
+        res.writeHead(503, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'No hay impresora configurada' }))
+        return
+      }
+      await printFiscalReceipt(data, printerName)
+      sendLog(`HTTP: Comprobante fiscal impreso — ${data.ncf || ''}`)
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ success: true }))
+      return
+    }
+
+    if (req.method === 'POST' && urlPath === '/print-comanda') {
+      const data = await parseBody(req)
+      const printerName = store.get('printerName')
+      if (!printerName) {
+        res.writeHead(503, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'No hay impresora configurada' }))
+        return
+      }
+      const order = {
+        table_label: data.table_label,
+        id: String(data.order_number || ''),
+        items: (data.items || []).map(i => ({ name: i.name, qty: i.qty, bar: i.product_type === 'bar' })),
+        created_at: data.date
+      }
+      await printTableComanda(order, printerName, store.get('businessName', 'Mi Negocio'))
+      sendLog(`HTTP: Comanda impresa — Mesa ${data.table_label}`)
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ success: true }))
+      return
+    }
+
+    res.writeHead(404, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ error: 'Not found' }))
+  } catch (err) {
+    console.error('HTTP error:', err.message)
+    res.writeHead(500, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ error: err.message }))
+  }
+}
+
+async function startHttpServer() {
+  const ports = [3001, 3002, 3003]
+
+  for (const port of ports) {
+    try {
+      await new Promise((resolve, reject) => {
+        const server = http.createServer(handleRequest)
+        server.once('error', reject)
+        server.listen(port, '127.0.0.1', () => {
+          httpServer = server
+          activePort = port
+          store.set('httpPort', port)
+          resolve()
+        })
+      })
+      sendLog(`Servidor HTTP activo en puerto ${activePort}`)
+      return
+    } catch (err) {
+      if (err.code !== 'EADDRINUSE') {
+        sendLog(`Error al iniciar servidor HTTP: ${err.message}`)
+        return
+      }
+    }
+  }
+
+  sendLog('Error: puertos 3001-3003 ocupados, servidor HTTP no iniciado')
+}
+
+// ─── IPC Handlers ─────────────────────────────────────────────────────────────
+
 ipcMain.handle('get-config', () => ({
   businessId: store.get('businessId', ''),
   businessName: store.get('businessName', ''),
-  printerName: store.get('printerName', '')
+  printerName: store.get('printerName', ''),
+  httpPort: activePort || store.get('httpPort', null)
 }))
 
-ipcMain.handle('save-config', (_event, config) => {
+ipcMain.handle('save-config', async (_event, config) => {
   store.set('businessId', config.businessId)
   store.set('businessName', config.businessName)
   store.set('printerName', config.printerName)
 
+  const bizInfo = await fetchBusinessInfo(config.businessId)
+  store.set('businessLegalName', bizInfo.legal_name || '')
+  store.set('businessRnc', bizInfo.rnc || '')
+  store.set('businessAddress', bizInfo.address || '')
+
   disconnect()
-  setCallbacks({ onStatus: onStatusChange, onOrder: onNewOrder })
+  setCallbacks({ onStatus: onStatusChange, onOrder: onNewOrder, onLogger: sendLog })
   startListening(config.businessId)
 
   return { success: true }
@@ -189,6 +368,12 @@ ipcMain.handle('test-print', async () => {
   if (!printerName) return { success: false, error: 'No hay impresora configurada' }
   try {
     await printTestPage(printerName, businessName)
+    if (printerName === TEST_PRINTER_NAME) {
+      new Notification({
+        title: 'Impresión simulada',
+        body: 'Ver /tmp/titimenu-print-test.txt'
+      }).show()
+    }
     return { success: true }
   } catch (err) {
     return { success: false, error: err.message }
@@ -197,9 +382,15 @@ ipcMain.handle('test-print', async () => {
 
 ipcMain.handle('get-status', () => isConnected)
 
+ipcMain.handle('reset-config', () => {
+  disconnect()
+  store.clear()
+  return { success: true }
+})
+
 // ─── App Lifecycle ────────────────────────────────────────────────────────────
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   app.setAppUserModelId('com.titimenu.printbridge')
 
   // Hide dock icon on Mac (tray-only app)
@@ -207,14 +398,17 @@ app.whenReady().then(() => {
 
   createTray()
 
-  const businessId = store.get('businessId')
+  // Always open config window on startup
+  createConfigWindow()
 
-  if (!businessId) {
-    createConfigWindow()
-  } else {
-    setCallbacks({ onStatus: onStatusChange, onOrder: onNewOrder })
+  // If there's a saved businessId, also start listening in the background
+  const businessId = store.get('businessId')
+  if (businessId) {
+    setCallbacks({ onStatus: onStatusChange, onOrder: onNewOrder, onLogger: sendLog })
     startListening(businessId)
   }
+
+  await startHttpServer()
 })
 
 app.on('window-all-closed', () => {
@@ -223,4 +417,5 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   disconnect()
+  if (httpServer) httpServer.close()
 })

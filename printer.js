@@ -1,7 +1,30 @@
 const { ThermalPrinter, PrinterTypes, CharacterSet, BreakLine } = require('node-thermal-printer')
 const { exec } = require('child_process')
 const { promisify } = require('util')
+const fs = require('fs')
+const path = require('path')
 const execAsync = promisify(exec)
+
+const TEST_MODE = false
+const TEST_OUTPUT_FILE = '/tmp/titimenu-print-test.txt'
+const TEST_PRINTER_NAME = 'TEST_MODE'
+
+// ─── Test mode: write text to file and show notification ─────────────────────
+
+function writeTestOutput(lines) {
+  const separator = '\n' + '='.repeat(40) + '\n'
+  const timestamp = `[${new Date().toLocaleString('es-DO')}]`
+  const content = timestamp + '\n' + lines.join('\n') + '\n'
+
+  // Append so multiple orders accumulate in the file
+  fs.appendFileSync(TEST_OUTPUT_FILE, separator + content)
+}
+
+function isTestMode(printerName) {
+  return TEST_MODE || printerName === TEST_PRINTER_NAME
+}
+
+// ─── Printer discovery ────────────────────────────────────────────────────────
 
 async function getUSBPrinters() {
   const printers = []
@@ -15,7 +38,6 @@ async function getUSBPrinters() {
         const name = line.split(' ')[0]
         if (name) printers.push({ name, displayName: name })
       })
-      // Also try system_profiler for USB printers
       try {
         const { stdout: spOut } = await execAsync(
           "system_profiler SPUSBDataType 2>/dev/null | grep -A5 'Printer' | grep 'Product ID\\|Manufacturer\\|Product' | head -20"
@@ -48,12 +70,13 @@ async function getUSBPrinters() {
     console.error('Error listing printers:', err.message)
   }
 
-  if (printers.length === 0) {
-    printers.push({ name: 'DUMMY', displayName: 'Sin impresora detectada' })
-  }
+  // Always append test mode option at the end
+  printers.push({ name: TEST_PRINTER_NAME, displayName: 'Modo prueba (sin impresora)' })
 
   return printers
 }
+
+// ─── Formatting helpers ───────────────────────────────────────────────────────
 
 function pad(str, len, right = false) {
   str = String(str || '')
@@ -84,85 +107,149 @@ function formatMoney(amount) {
   return parseFloat(amount || 0).toFixed(2)
 }
 
+// ─── Real printer factory ─────────────────────────────────────────────────────
+
 async function createPrinter(printerName) {
   const platform = process.platform
   let interfaceStr
 
-  if (printerName === 'DUMMY') {
-    interfaceStr = 'tcp://127.0.0.1:9100'
-  } else if (platform === 'win32') {
+  if (platform === 'win32') {
     interfaceStr = `\\\\localhost\\${printerName}`
   } else {
     interfaceStr = `printer:${printerName}`
   }
 
-  const printer = new ThermalPrinter({
+  return new ThermalPrinter({
     type: PrinterTypes.EPSON,
     interface: interfaceStr,
     characterSet: CharacterSet.PC858_EURO,
     breakLine: BreakLine.WORD,
     options: { timeout: 5000 }
   })
-
-  return printer
 }
 
-async function printPOSReceipt(order, printerName, businessName) {
-  const printer = await createPrinter(printerName)
+// ─── POS Receipt ──────────────────────────────────────────────────────────────
 
-  const isConnected = await printer.isPrinterConnected()
-  if (!isConnected) throw new Error('Impresora no disponible')
+async function printPOSReceipt(order, printerName, businessInfo) {
+  const info = typeof businessInfo === 'string' ? { name: businessInfo } : (businessInfo || {})
+  const bizName = info.name || 'MI NEGOCIO'
+  const legalName = info.legalName || ''
+  const rnc = info.rnc || ''
+  const address = info.address || ''
 
   const LINE = '================================'
   const DASH = '--------------------------------'
   const W = 32
+  const dt = order.created_at || new Date().toISOString()
+  const items = order.items || order.order_items || []
+  const total = parseFloat(order.total || order.total_amount || 0)
+  const tip = parseFloat(order.tip_amount || 0)
+  const hasTip = tip > 0
+  const subtotal = hasTip ? parseFloat(order.subtotal || (total - tip)) : 0
+  const tipPct = hasTip && order.tip_pct ? parseFloat(order.tip_pct) : null
+  const tipLabel = tipPct ? `Propina (${tipPct}%):` : 'Propina:'
+  const payMethod = order.payment_method || 'Efectivo'
+  const posNum = order.order_number || order.id?.slice(-6) || '000'
+
+  const lines = [
+    LINE,
+    center(bizName, W),
+    ...(legalName ? [center(legalName, W)] : []),
+    ...(rnc ? [center(`RNC: ${rnc}`, W)] : []),
+    ...(address ? [center(address, W)] : []),
+    center(`POS #${posNum}`, W),
+    center(`${formatDate(dt)}  ${formatTime(dt)}`, W),
+    LINE,
+    ...items.map(item => {
+      const left = `${item.quantity || item.qty || 1}x ${item.name || item.product_name || ''}`
+      const right = `RD$${formatMoney((item.unit_price || item.price || 0) * (item.quantity || item.qty || 1))}`
+      const spaces = W - left.length - right.length
+      return left + ' '.repeat(Math.max(1, spaces)) + right
+    }),
+    DASH,
+    ...(hasTip ? [
+      pad('SUBTOTAL:', 16) + pad(`RD$${formatMoney(subtotal)}`, 16, true),
+      pad(tipLabel, 16) + pad(`+RD$${formatMoney(tip)}`, 16, true),
+    ] : []),
+    pad('TOTAL:', 16) + pad(`RD$${formatMoney(total)}`, 16, true),
+    `Pago: ${payMethod}`,
+    LINE,
+    center('¡Gracias por su visita!', W),
+    LINE,
+    '[CORTE]'
+  ]
+
+  if (isTestMode(printerName)) {
+    writeTestOutput(lines)
+    return
+  }
+
+  const printer = await createPrinter(printerName)
+  if (!await printer.isPrinterConnected()) throw new Error('Impresora no disponible')
 
   printer.alignCenter()
   printer.println(LINE)
-  printer.println(center(businessName || 'MI NEGOCIO', W))
-  printer.println(center(`POS #${order.order_number || order.id?.slice(-6) || '000'}`, W))
-  const dt = order.created_at || new Date().toISOString()
+  printer.println(center(bizName, W))
+  if (legalName) printer.println(center(legalName, W))
+  if (rnc) printer.println(center(`RNC: ${rnc}`, W))
+  if (address) printer.println(center(address, W))
+  printer.println(center(`POS #${posNum}`, W))
   printer.println(center(`${formatDate(dt)}  ${formatTime(dt)}`, W))
   printer.println(LINE)
-
   printer.alignLeft()
-  const items = order.items || order.order_items || []
   items.forEach(item => {
     const left = `${item.quantity || item.qty || 1}x ${item.name || item.product_name || ''}`
     const right = `RD$${formatMoney((item.unit_price || item.price || 0) * (item.quantity || item.qty || 1))}`
     const spaces = W - left.length - right.length
     printer.println(left + ' '.repeat(Math.max(1, spaces)) + right)
   })
-
   printer.println(DASH)
-
-  const subtotal = order.subtotal || order.total || 0
-  const total = order.total || order.total_amount || 0
-  printer.println(pad('SUBTOTAL:', 16) + pad(`RD$${formatMoney(subtotal)}`, 16, true))
+  if (hasTip) {
+    printer.println(pad('SUBTOTAL:', 16) + pad(`RD$${formatMoney(subtotal)}`, 16, true))
+    printer.println(pad(tipLabel, 16) + pad(`+RD$${formatMoney(tip)}`, 16, true))
+  }
   printer.println(pad('TOTAL:', 16) + pad(`RD$${formatMoney(total)}`, 16, true))
-
-  const payMethod = order.payment_method || 'Efectivo'
   printer.println(`Pago: ${payMethod}`)
-
   printer.println(LINE)
   printer.alignCenter()
   printer.println('¡Gracias por su visita!')
   printer.println(LINE)
   printer.cut()
-
   await printer.execute()
 }
 
+// ─── Table Comanda ────────────────────────────────────────────────────────────
+
 async function printTableComanda(order, printerName, businessName) {
-  const printer = await createPrinter(printerName)
-
-  const isConnected = await printer.isPrinterConnected()
-  if (!isConnected) throw new Error('Impresora no disponible')
-
   const LINE = '================================'
   const dt = order.created_at || new Date().toISOString()
   const tableLabel = order.table_label || order.table_number || order.table_id || '?'
   const shortId = (order.id || '000000').slice(-6).toUpperCase()
+  const items = order.items || order.order_items || []
+  const kitchenItems = items.filter(i => !i.bar && i.category !== 'bar' && i.station !== 'bar')
+  const barItems = items.filter(i => i.bar || i.category === 'bar' || i.station === 'bar')
+  const allItems = kitchenItems.length === 0 && barItems.length === 0 ? items : []
+
+  if (isTestMode(printerName)) {
+    const lines = [
+      LINE,
+      center(`** COMANDA - MESA ${tableLabel} **`),
+      center(`${formatDate(dt)}  ${formatTime(dt)}`),
+      LINE,
+      ...(kitchenItems.length > 0 ? ['--- COCINA ---', ...kitchenItems.map(i => `${i.quantity || i.qty || 1}x ${i.name || i.product_name || ''}`)] : []),
+      ...(barItems.length > 0 ? ['--- BAR ---', ...barItems.map(i => `${i.quantity || i.qty || 1}x ${i.name || i.product_name || ''}`)] : []),
+      ...(allItems.length > 0 ? ['--- ITEMS ---', ...allItems.map(i => `${i.quantity || i.qty || 1}x ${i.name || i.product_name || ''}`)] : []),
+      LINE,
+      center(`Orden #${shortId}`),
+      LINE,
+      '[CORTE]'
+    ]
+    writeTestOutput(lines)
+    return
+  }
+
+  const printer = await createPrinter(printerName)
+  if (!await printer.isPrinterConnected()) throw new Error('Impresora no disponible')
 
   printer.alignCenter()
   printer.println(LINE)
@@ -171,41 +258,22 @@ async function printTableComanda(order, printerName, businessName) {
   printer.bold(false)
   printer.println(center(`${formatDate(dt)}  ${formatTime(dt)}`))
   printer.println(LINE)
-
   printer.alignLeft()
 
-  const items = order.items || order.order_items || []
-  const kitchenItems = items.filter(i => !i.bar && i.category !== 'bar' && i.station !== 'bar')
-  const barItems = items.filter(i => i.bar || i.category === 'bar' || i.station === 'bar')
-
   if (kitchenItems.length > 0) {
-    printer.alignCenter()
-    printer.println('--- COCINA ---')
-    printer.alignLeft()
+    printer.alignCenter(); printer.println('--- COCINA ---'); printer.alignLeft()
     kitchenItems.forEach(item => {
       printer.println(`${item.quantity || item.qty || 1}x ${item.name || item.product_name || ''}`)
-      if (item.notes || item.special_instructions) {
-        printer.println(`   * ${item.notes || item.special_instructions}`)
-      }
+      if (item.notes || item.special_instructions) printer.println(`   * ${item.notes || item.special_instructions}`)
     })
   }
-
   if (barItems.length > 0) {
-    printer.alignCenter()
-    printer.println('--- BAR ---')
-    printer.alignLeft()
-    barItems.forEach(item => {
-      printer.println(`${item.quantity || item.qty || 1}x ${item.name || item.product_name || ''}`)
-    })
+    printer.alignCenter(); printer.println('--- BAR ---'); printer.alignLeft()
+    barItems.forEach(item => printer.println(`${item.quantity || item.qty || 1}x ${item.name || item.product_name || ''}`))
   }
-
-  if (kitchenItems.length === 0 && barItems.length === 0) {
-    printer.alignCenter()
-    printer.println('--- ITEMS ---')
-    printer.alignLeft()
-    items.forEach(item => {
-      printer.println(`${item.quantity || item.qty || 1}x ${item.name || item.product_name || ''}`)
-    })
+  if (allItems.length > 0) {
+    printer.alignCenter(); printer.println('--- ITEMS ---'); printer.alignLeft()
+    allItems.forEach(item => printer.println(`${item.quantity || item.qty || 1}x ${item.name || item.product_name || ''}`))
   }
 
   printer.alignCenter()
@@ -213,21 +281,49 @@ async function printTableComanda(order, printerName, businessName) {
   printer.println(center(`Orden #${shortId}`))
   printer.println(LINE)
   printer.cut()
-
   await printer.execute()
 }
 
+// ─── Delivery / Takeout Ticket ────────────────────────────────────────────────
+
 async function printDeliveryTicket(order, printerName, businessName) {
-  const printer = await createPrinter(printerName)
-
-  const isConnected = await printer.isPrinterConnected()
-  if (!isConnected) throw new Error('Impresora no disponible')
-
   const LINE = '================================'
   const DASH = '--------------------------------'
   const W = 32
   const dt = order.created_at || new Date().toISOString()
   const typeLabel = (order.order_type || 'delivery').toUpperCase()
+  const customerName = order.customer_name || order.client_name || 'Cliente'
+  const customerPhone = order.customer_phone || order.phone || order.tel || 'N/A'
+  const items = order.items || order.order_items || []
+  const total = order.total || order.total_amount || 0
+
+  if (isTestMode(printerName)) {
+    const lines = [
+      LINE,
+      center(`** ${typeLabel} **`),
+      center(`${formatDate(dt)}  ${formatTime(dt)}`),
+      LINE,
+      `Cliente: ${customerName}`,
+      `Tel: ${customerPhone}`,
+      DASH,
+      ...items.map(item => {
+        const left = `${item.quantity || item.qty || 1}x ${item.name || item.product_name || ''}`
+        const right = `RD$${formatMoney((item.unit_price || item.price || 0) * (item.quantity || item.qty || 1))}`
+        const spaces = W - left.length - right.length
+        return left + ' '.repeat(Math.max(1, spaces)) + right
+      }),
+      DASH,
+      pad('TOTAL:', 16) + pad(`RD$${formatMoney(total)}`, 16, true),
+      ...(order.delivery_address || order.address ? [DASH, `Dir: ${order.delivery_address || order.address}`] : []),
+      LINE,
+      '[CORTE]'
+    ]
+    writeTestOutput(lines)
+    return
+  }
+
+  const printer = await createPrinter(printerName)
+  if (!await printer.isPrinterConnected()) throw new Error('Impresora no disponible')
 
   printer.alignCenter()
   printer.println(LINE)
@@ -236,39 +332,47 @@ async function printDeliveryTicket(order, printerName, businessName) {
   printer.bold(false)
   printer.println(center(`${formatDate(dt)}  ${formatTime(dt)}`))
   printer.println(LINE)
-
   printer.alignLeft()
-  const customerName = order.customer_name || order.client_name || 'Cliente'
-  const customerPhone = order.customer_phone || order.phone || order.tel || 'N/A'
   printer.println(`Cliente: ${customerName}`)
   printer.println(`Tel: ${customerPhone}`)
   printer.println(DASH)
-
-  const items = order.items || order.order_items || []
   items.forEach(item => {
     const left = `${item.quantity || item.qty || 1}x ${item.name || item.product_name || ''}`
     const right = `RD$${formatMoney((item.unit_price || item.price || 0) * (item.quantity || item.qty || 1))}`
     const spaces = W - left.length - right.length
     printer.println(left + ' '.repeat(Math.max(1, spaces)) + right)
   })
-
   printer.println(DASH)
-  printer.println(pad('TOTAL:', 16) + pad(`RD$${formatMoney(order.total || order.total_amount || 0)}`, 16, true))
-
+  printer.println(pad('TOTAL:', 16) + pad(`RD$${formatMoney(total)}`, 16, true))
   if (order.delivery_address || order.address) {
     printer.println(DASH)
     printer.println(`Dir: ${order.delivery_address || order.address}`)
   }
-
   printer.println(LINE)
   printer.cut()
-
   await printer.execute()
 }
 
-async function printTestPage(printerName, businessName) {
-  const printer = await createPrinter(printerName)
+// ─── Test page ────────────────────────────────────────────────────────────────
 
+async function printTestPage(printerName, businessName) {
+  const lines = [
+    '================================',
+    '  TitiMenu Print Bridge',
+    businessName || 'Mi Negocio',
+    '================================',
+    'Impresora configurada OK!',
+    new Date().toLocaleString('es-DO'),
+    '================================',
+    '[CORTE]'
+  ]
+
+  if (isTestMode(printerName)) {
+    writeTestOutput(lines)
+    return
+  }
+
+  const printer = await createPrinter(printerName)
   printer.alignCenter()
   printer.println('================================')
   printer.bold(true)
@@ -280,8 +384,120 @@ async function printTestPage(printerName, businessName) {
   printer.println(new Date().toLocaleString('es-DO'))
   printer.println('================================')
   printer.cut()
-
   await printer.execute()
 }
 
-module.exports = { getUSBPrinters, printPOSReceipt, printTableComanda, printDeliveryTicket, printTestPage }
+// ─── Fiscal Receipt ──────────────────────────────────────────────────────────
+
+async function printFiscalReceipt(data, printerName) {
+  const LINE = '================================'
+  const DASH = '--------------------------------'
+  const W = 32
+
+  const bizName = data.business_name || 'MI NEGOCIO'
+  const legalName = data.legal_name || ''
+  const rnc = data.rnc || ''
+  const address = data.address || ''
+  const ncf = data.ncf || ''
+  const ncfType = data.ncf_type || 'B02'
+  const ncfLabel = ncfType === 'B01' ? 'Crédito Fiscal' : 'Consumidor Final'
+  const items = data.items || []
+  const subtotal = parseFloat(data.subtotal || 0)
+  const itbis = parseFloat(data.itbis || 0)
+  const total = parseFloat(data.total || 0)
+  const tip = parseFloat(data.tip_amount || 0)
+  const hasTip = tip > 0
+  const dt = data.date || new Date().toISOString()
+
+  const lines = [
+    LINE,
+    center(bizName, W),
+    ...(legalName ? [center(legalName, W)] : []),
+    center(`RNC: ${rnc}`, W),
+    ...(address ? [center(address, W)] : []),
+    LINE,
+    center('COMPROBANTE FISCAL', W),
+    center(ncf, W),
+    center(ncfLabel, W),
+    `Fecha: ${formatDate(dt)}`,
+    LINE,
+    ...items.map(item => {
+      const left = `${item.qty || 1}x ${item.name || ''}`
+      const right = `RD$${formatMoney(item.subtotal || (item.price * (item.qty || 1)) || 0)}`
+      const spaces = W - left.length - right.length
+      return left + ' '.repeat(Math.max(1, spaces)) + right
+    }),
+    DASH,
+    pad('Base imponible:', 16) + pad(`RD$${formatMoney(subtotal)}`, 16, true),
+    pad('ITBIS (18%):', 16) + pad(`+RD$${formatMoney(itbis)}`, 16, true),
+    ...(hasTip ? [pad('Propina:', 16) + pad(`+RD$${formatMoney(tip)}`, 16, true)] : []),
+    LINE,
+    pad('TOTAL:', 16) + pad(`RD$${formatMoney(total)}`, 16, true),
+    LINE,
+    ...(ncfType === 'B02' && data.client_name ? [
+      `Cliente: ${data.client_name}`,
+      ...(data.client_rnc ? [`RNC: ${data.client_rnc}`] : []),
+      LINE
+    ] : []),
+    center('¡Gracias por su visita!', W),
+    LINE,
+    '[CORTE]'
+  ]
+
+  if (isTestMode(printerName)) {
+    writeTestOutput(lines)
+    return
+  }
+
+  const printer = await createPrinter(printerName)
+  if (!await printer.isPrinterConnected()) throw new Error('Impresora no disponible')
+
+  printer.alignCenter()
+  printer.println(LINE)
+  printer.println(center(bizName, W))
+  if (legalName) printer.println(center(legalName, W))
+  printer.println(center(`RNC: ${rnc}`, W))
+  if (address) printer.println(center(address, W))
+  printer.println(LINE)
+  printer.bold(true)
+  printer.println(center('COMPROBANTE FISCAL', W))
+  printer.bold(false)
+  printer.println(center(ncf, W))
+  printer.println(center(ncfLabel, W))
+  printer.alignLeft()
+  printer.println(`Fecha: ${formatDate(dt)}`)
+  printer.println(LINE)
+  items.forEach(item => {
+    const left = `${item.qty || 1}x ${item.name || ''}`
+    const right = `RD$${formatMoney(item.subtotal || (item.price * (item.qty || 1)) || 0)}`
+    const spaces = W - left.length - right.length
+    printer.println(left + ' '.repeat(Math.max(1, spaces)) + right)
+  })
+  printer.println(DASH)
+  printer.println(pad('Base imponible:', 16) + pad(`RD$${formatMoney(subtotal)}`, 16, true))
+  printer.println(pad('ITBIS (18%):', 16) + pad(`+RD$${formatMoney(itbis)}`, 16, true))
+  if (hasTip) printer.println(pad('Propina:', 16) + pad(`+RD$${formatMoney(tip)}`, 16, true))
+  printer.println(LINE)
+  printer.println(pad('TOTAL:', 16) + pad(`RD$${formatMoney(total)}`, 16, true))
+  printer.println(LINE)
+  if (ncfType === 'B02' && data.client_name) {
+    printer.println(`Cliente: ${data.client_name}`)
+    if (data.client_rnc) printer.println(`RNC: ${data.client_rnc}`)
+    printer.println(LINE)
+  }
+  printer.alignCenter()
+  printer.println('¡Gracias por su visita!')
+  printer.println(LINE)
+  printer.cut()
+  await printer.execute()
+}
+
+module.exports = {
+  getUSBPrinters,
+  printPOSReceipt,
+  printFiscalReceipt,
+  printTableComanda,
+  printDeliveryTicket,
+  printTestPage,
+  TEST_PRINTER_NAME
+}

@@ -15,7 +15,7 @@
       display: flex;
       flex-direction: column;
       align-items: center;
-      padding: 32px 24px;
+      padding: 28px 24px 48px;
       user-select: none;
     }
 
@@ -34,7 +34,7 @@
       color: #555;
       letter-spacing: 2px;
       text-transform: uppercase;
-      margin-bottom: 32px;
+      margin-bottom: 24px;
     }
 
     .status-bar {
@@ -45,7 +45,7 @@
       border: 1px solid #222;
       border-radius: 8px;
       padding: 10px 16px;
-      margin-bottom: 28px;
+      margin-bottom: 20px;
       width: 100%;
       max-width: 360px;
     }
@@ -59,19 +59,43 @@
       transition: background 0.3s;
     }
 
-    .status-dot.connected { background: #48bb78; box-shadow: 0 0 6px #48bb78; }
+    .status-dot.connecting {
+      background: #d69e2e;
+      animation: pulse 1s infinite;
+    }
+
+    .status-dot.connected {
+      background: #48bb78;
+      box-shadow: 0 0 6px #48bb78;
+      animation: none;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
 
     .status-text {
       font-size: 13px;
       color: #888;
     }
 
+    .http-badge {
+      margin-left: auto;
+      font-size: 11px;
+      color: #444;
+      font-family: monospace;
+      letter-spacing: 0;
+    }
+
+    .http-badge.active { color: #48bb78; }
+
     .form {
       width: 100%;
       max-width: 360px;
       display: flex;
       flex-direction: column;
-      gap: 16px;
+      gap: 14px;
     }
 
     .field {
@@ -123,7 +147,7 @@
       display: flex;
       flex-direction: column;
       gap: 10px;
-      margin-top: 8px;
+      margin-top: 4px;
     }
 
     .btn {
@@ -158,12 +182,96 @@
       color: #fff;
     }
 
+    .btn-reset {
+      background: transparent;
+      color: #3a3a3a;
+      border: none;
+      font-size: 12px;
+      padding: 6px;
+      font-weight: 400;
+      text-decoration: underline;
+      text-decoration-color: #2a2a2a;
+    }
+
+    .btn-reset:hover:not(:disabled) { color: #666; }
+
+    /* ── Activity log ── */
+    .log-box {
+      width: 100%;
+      max-width: 360px;
+      margin-top: 16px;
+      background: #0e0e0e;
+      border: 1px solid #1e1e1e;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .log-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 12px;
+      border-bottom: 1px solid #1e1e1e;
+    }
+
+    .log-title {
+      font-size: 11px;
+      color: #555;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+    }
+
+    .log-clear {
+      font-size: 11px;
+      color: #333;
+      cursor: pointer;
+      background: none;
+      border: none;
+      padding: 0;
+    }
+
+    .log-clear:hover { color: #666; }
+
+    .log-entries {
+      height: 120px;
+      overflow-y: auto;
+      padding: 8px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+
+    .log-entries::-webkit-scrollbar { width: 4px; }
+    .log-entries::-webkit-scrollbar-track { background: transparent; }
+    .log-entries::-webkit-scrollbar-thumb { background: #2a2a2a; border-radius: 2px; }
+
+    .log-entry {
+      display: flex;
+      gap: 8px;
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .log-time {
+      color: #333;
+      flex-shrink: 0;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .log-msg { color: #777; }
+    .log-msg.ok { color: #48bb78; }
+    .log-msg.warn { color: #d69e2e; }
+    .log-msg.err { color: #fc8181; }
+
     .message {
       font-size: 12px;
       text-align: center;
       padding: 10px;
       border-radius: 6px;
       display: none;
+      margin-top: 4px;
+      max-width: 360px;
+      width: 100%;
     }
 
     .message.success { background: #1a2e1a; color: #68d391; border: 1px solid #276749; }
@@ -173,7 +281,7 @@
     .version {
       position: fixed;
       bottom: 12px;
-      color: #333;
+      color: #2a2a2a;
       font-size: 11px;
     }
   </style>
@@ -185,6 +293,7 @@
   <div class="status-bar">
     <div class="status-dot" id="statusDot"></div>
     <span class="status-text" id="statusText">Desconectado</span>
+    <span class="http-badge" id="httpBadge">HTTP —</span>
   </div>
 
   <form class="form" id="configForm" onsubmit="return false">
@@ -223,39 +332,57 @@
       <button class="btn btn-secondary" id="testBtn" onclick="testPrint()">
         Probar impresión
       </button>
+      <button class="btn btn-reset" id="resetBtn" onclick="resetConfig()">
+        Resetear configuración
+      </button>
     </div>
 
     <div class="message" id="message"></div>
   </form>
 
+  <div class="log-box">
+    <div class="log-header">
+      <span class="log-title">Actividad</span>
+      <button class="log-clear" onclick="clearLog()">limpiar</button>
+    </div>
+    <div class="log-entries" id="logEntries">
+      <div class="log-entry">
+        <span class="log-time">--:--</span>
+        <span class="log-msg">Iniciando...</span>
+      </div>
+    </div>
+  </div>
+
   <div class="version">v1.0.0</div>
 
   <script>
-    let currentStatus = false
+    let isSaving = false
 
     async function init() {
       await loadPrinters()
       await loadConfig()
       listenStatus()
+      listenLogs()
     }
 
+    // ── Fix #2: never bail early — always render whatever getPrinters returns ──
     async function loadPrinters() {
       const select = document.getElementById('printerSelect')
       try {
         const printers = await window.electronAPI.getPrinters()
         select.innerHTML = ''
-        if (printers.length === 0) {
-          select.innerHTML = '<option value="">Sin impresoras detectadas</option>'
-          return
-        }
         printers.forEach(p => {
           const opt = document.createElement('option')
           opt.value = p.name
           opt.textContent = p.displayName || p.name
           select.appendChild(opt)
         })
+        if (select.options.length === 0) {
+          select.innerHTML = '<option value="">Sin impresoras detectadas</option>'
+        }
       } catch (e) {
-        select.innerHTML = '<option value="">Error al cargar</option>'
+        select.innerHTML = '<option value="">Error al cargar impresoras</option>'
+        addLog('Error cargando impresoras: ' + e.message, 'err')
       }
     }
 
@@ -266,29 +393,68 @@
         if (config.businessName) document.getElementById('businessName').value = config.businessName
         if (config.printerName) {
           const sel = document.getElementById('printerSelect')
-          for (let opt of sel.options) {
+          for (const opt of sel.options) {
             if (opt.value === config.printerName) { sel.value = config.printerName; break }
           }
+        }
+        if (config.httpPort) {
+          const badge = document.getElementById('httpBadge')
+          badge.textContent = `HTTP :${config.httpPort}`
+          badge.classList.add('active')
         }
       } catch (_) {}
     }
 
     function listenStatus() {
-      window.electronAPI.onStatusChange((connected) => {
-        updateStatus(connected)
-      })
+      window.electronAPI.onStatusChange((connected) => updateStatus(connected))
       window.electronAPI.getStatus().then(s => updateStatus(s))
     }
 
+    // ── Fix #3: receive log lines from main process ───────────────────────────
+    function listenLogs() {
+      window.electronAPI.onLogMessage((text) => {
+        const isOk = /suscrito|esperando|conectado/i.test(text)
+        const isErr = /error|cerrado|fallo/i.test(text)
+        addLog(text, isErr ? 'err' : isOk ? 'ok' : 'warn')
+      })
+    }
+
+    function addLog(text, type = '') {
+      const entries = document.getElementById('logEntries')
+      const now = new Date()
+      const time = now.toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+      const entry = document.createElement('div')
+      entry.className = 'log-entry'
+      entry.innerHTML = `<span class="log-time">${time}</span><span class="log-msg ${type}">${text}</span>`
+      entries.appendChild(entry)
+      entries.scrollTop = entries.scrollHeight
+    }
+
+    function clearLog() {
+      document.getElementById('logEntries').innerHTML = ''
+    }
+
+    // ── Fix #1: stay in "Conectando..." until status-change fires ────────────
     function updateStatus(connected) {
-      currentStatus = connected
       const dot = document.getElementById('statusDot')
       const text = document.getElementById('statusText')
+      const btn = document.getElementById('saveBtn')
+
       if (connected) {
-        dot.classList.add('connected')
+        dot.className = 'status-dot connected'
         text.textContent = 'Conectado a TitiMenu'
+        // Restore button only when actually connected
+        if (isSaving) {
+          isSaving = false
+          btn.disabled = false
+          btn.textContent = 'Guardar y conectar'
+          showMessage('¡Conectado! Escuchando órdenes.', 'success')
+        }
+      } else if (isSaving) {
+        dot.className = 'status-dot connecting'
+        text.textContent = 'Conectando...'
       } else {
-        dot.classList.remove('connected')
+        dot.className = 'status-dot'
         text.textContent = 'Desconectado'
       }
     }
@@ -298,22 +464,32 @@
       const businessName = document.getElementById('businessName').value.trim()
       const printerName = document.getElementById('printerSelect').value
 
-      if (!businessId) { showMessage('Ingresa tu Business ID', 'error'); return }
+      if (!businessId)   { showMessage('Ingresa tu Business ID', 'error'); return }
       if (!businessName) { showMessage('Ingresa el nombre del negocio', 'error'); return }
-      if (!printerName) { showMessage('Selecciona una impresora', 'error'); return }
+      if (!printerName)  { showMessage('Selecciona una impresora', 'error'); return }
 
       const btn = document.getElementById('saveBtn')
+      const dot = document.getElementById('statusDot')
+      const text = document.getElementById('statusText')
+
+      isSaving = true
       btn.disabled = true
       btn.textContent = 'Conectando...'
+      dot.className = 'status-dot connecting'
+      text.textContent = 'Conectando a Supabase...'
 
       try {
         await window.electronAPI.saveConfig({ businessId, businessName, printerName })
-        showMessage('¡Configuración guardada! Conectando...', 'success')
+        addLog('Configuración guardada — iniciando conexión...', 'warn')
+        // Button stays disabled; updateStatus(true) will restore it
       } catch (e) {
-        showMessage('Error al guardar: ' + e.message, 'error')
-      } finally {
+        isSaving = false
         btn.disabled = false
         btn.textContent = 'Guardar y conectar'
+        dot.className = 'status-dot'
+        text.textContent = 'Desconectado'
+        showMessage('Error al guardar: ' + e.message, 'error')
+        addLog('Error al guardar: ' + e.message, 'err')
       }
     }
 
@@ -325,14 +501,37 @@
         const result = await window.electronAPI.testPrint()
         if (result.success) {
           showMessage('Página de prueba enviada', 'success')
+          addLog('Página de prueba enviada OK', 'ok')
         } else {
           showMessage('Error: ' + (result.error || 'Impresora no disponible'), 'error')
+          addLog('Error de impresión: ' + (result.error || ''), 'err')
         }
       } catch (e) {
         showMessage('Error: ' + e.message, 'error')
+        addLog('Error: ' + e.message, 'err')
       } finally {
         btn.disabled = false
         btn.textContent = 'Probar impresión'
+      }
+    }
+
+    async function resetConfig() {
+      if (!confirm('¿Borrar toda la configuración guardada?')) return
+      try {
+        await window.electronAPI.resetConfig()
+        document.getElementById('businessId').value = ''
+        document.getElementById('businessName').value = ''
+        document.getElementById('printerSelect').selectedIndex = 0
+        document.getElementById('statusDot').className = 'status-dot'
+        document.getElementById('statusText').textContent = 'Desconectado'
+        isSaving = false
+        document.getElementById('saveBtn').disabled = false
+        document.getElementById('saveBtn').textContent = 'Guardar y conectar'
+        clearLog()
+        addLog('Configuración reseteada', 'warn')
+        showMessage('Configuración borrada', 'success')
+      } catch (e) {
+        showMessage('Error al resetear: ' + e.message, 'error')
       }
     }
 
@@ -340,7 +539,8 @@
       const el = document.getElementById('message')
       el.textContent = text
       el.className = `message ${type} show`
-      setTimeout(() => el.classList.remove('show'), 4000)
+      clearTimeout(el._timer)
+      el._timer = setTimeout(() => el.classList.remove('show'), 5000)
     }
 
     init()
