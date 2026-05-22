@@ -15,24 +15,25 @@ let httpServer = null
 let activePort = null
 let updateReady = false
 
+function sendUpdateStatus(status, details = null) {
+  if (configWindow && !configWindow.isDestroyed()) {
+    configWindow.webContents.send('update-status', { status, details })
+  }
+}
+
 // ─── Auto-updater ─────────────────────────────────────────────────────────────
 
 autoUpdater.autoDownload = true
 autoUpdater.autoInstallOnAppQuit = true
 
-autoUpdater.setFeedURL({
-  provider: 'github',
-  owner: 'Sandytheking',
-  repo: 'titimenu-print',
-  private: false,
-})
-
 autoUpdater.on('checking-for-update', () => {
   sendLog('Buscando actualizaciones...')
+  sendUpdateStatus('checking')
 })
 
 autoUpdater.on('update-available', (info) => {
   sendLog(`Nueva versión disponible: v${info.version}`)
+  sendUpdateStatus('available', info)
   new Notification({
     title: 'TitiMenu Print Bridge',
     body: `Descargando actualización v${info.version}`
@@ -41,11 +42,13 @@ autoUpdater.on('update-available', (info) => {
 
 autoUpdater.on('update-not-available', () => {
   sendLog('TitiMenu Print Bridge está actualizado')
+  sendUpdateStatus('not-available')
 })
 
 autoUpdater.on('update-downloaded', (info) => {
   updateReady = true
   sendLog(`✅ Actualización v${info.version} lista — se instalará al cerrar`)
+  sendUpdateStatus('downloaded', info)
   new Notification({
     title: 'TitiMenu Print Bridge',
     body: `Actualización v${info.version} lista. Reinicia para aplicarla.`
@@ -55,6 +58,7 @@ autoUpdater.on('update-downloaded', (info) => {
 
 autoUpdater.on('error', (err) => {
   sendLog(`Error de actualización: ${err.message}`)
+  sendUpdateStatus('error', err.message)
 })
 
 // ─── Tray icons (base64 inline so no external assets needed at runtime) ──────
@@ -80,7 +84,7 @@ function createConfigWindow() {
 
   configWindow = new BrowserWindow({
     width: 440,
-    height: 580,
+    height: 720,
     resizable: false,
     title: 'TitiMenu Print Bridge — Configuración',
     backgroundColor: '#0a0a0a',
@@ -402,13 +406,18 @@ ipcMain.handle('get-config', () => ({
   businessId: store.get('businessId', ''),
   businessName: store.get('businessName', ''),
   printerName: store.get('printerName', ''),
-  httpPort: activePort || store.get('httpPort', null)
+  printMode: store.get('printMode', 'thermal'),
+  paperWidth: store.get('paperWidth', '80mm'),
+  httpPort: activePort || store.get('httpPort', null),
+  version: app.getVersion()
 }))
 
 ipcMain.handle('save-config', async (_event, config) => {
   store.set('businessId', config.businessId)
   store.set('businessName', config.businessName)
   store.set('printerName', config.printerName)
+  store.set('printMode', config.printMode || 'thermal')
+  store.set('paperWidth', config.paperWidth || '80mm')
 
   const bizInfo = await fetchBusinessInfo(config.businessId)
   store.set('businessLegalName', bizInfo.legal_name || '')
@@ -452,6 +461,22 @@ ipcMain.handle('reset-config', () => {
   return { success: true }
 })
 
+ipcMain.handle('check-for-updates', async () => {
+  try {
+    sendLog('Iniciando búsqueda manual de actualizaciones...')
+    const result = await autoUpdater.checkForUpdatesAndNotify()
+    return { success: true, updateInfo: result?.updateInfo }
+  } catch (err) {
+    sendLog(`Error en búsqueda manual: ${err.message}`)
+    return { success: false, error: err.message }
+  }
+})
+
+ipcMain.handle('quit-and-install', () => {
+  autoUpdater.quitAndInstall()
+  return { success: true }
+})
+
 // ─── App Lifecycle ────────────────────────────────────────────────────────────
 
 app.whenReady().then(async () => {
@@ -478,9 +503,10 @@ app.whenReady().then(async () => {
     try { autoUpdater.checkForUpdatesAndNotify() } catch (e) { sendLog(`Error de actualización: ${e.message}`) }
   }, 10000)
 
+  // Verificación cada 24 horas (como solicitó el usuario)
   setInterval(() => {
     try { autoUpdater.checkForUpdatesAndNotify() } catch (e) { sendLog(`Error de actualización: ${e.message}`) }
-  }, 4 * 60 * 60 * 1000)
+  }, 24 * 60 * 60 * 1000)
 })
 
 app.on('window-all-closed', () => {

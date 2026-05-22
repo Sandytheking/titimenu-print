@@ -8,5 +8,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getStatus: () => ipcRenderer.invoke('get-status'),
   onStatusChange: (callback) => ipcRenderer.on('status-change', (_event, connected) => callback(connected)),
   onLogMessage: (callback) => ipcRenderer.on('log-message', (_event, text) => callback(text)),
-  resetConfig: () => ipcRenderer.invoke('reset-config')
+  resetConfig: () => ipcRenderer.invoke('reset-config'),
+  checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
+  onUpdateStatus: (callback) => ipcRenderer.on('update-status', (_event, data) => callback(data)),
+  quitAndInstall: () => ipcRenderer.invoke('quit-and-install')
 })

@@ -4,98 +4,223 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>TitiMenu Print Bridge — Configuración</title>
+  <!-- Google Fonts for Outfit & Plus Jakarta Sans -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  
   <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
+    :root {
+      --bg-color: #050507;
+      --card-bg: rgba(18, 18, 23, 0.7);
+      --card-border: rgba(255, 255, 255, 0.05);
+      --red-accent: #ff3b30;
+      --red-accent-rgb: 255, 59, 48;
+      --red-glow: rgba(255, 59, 48, 0.15);
+      --text-main: #ffffff;
+      --text-muted: #8e8e93;
+      --text-dark: #3a3a3c;
+      --green-accent: #34c759;
+      --green-accent-rgb: 52, 199, 89;
+      --amber-accent: #ff9500;
+      --input-bg: #1c1c1e;
+      --input-border: #2c2c2e;
+      --font-display: 'Outfit', -apple-system, sans-serif;
+      --font-body: 'Plus Jakarta Sans', -apple-system, sans-serif;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
 
     body {
-      background: #0a0a0a;
-      color: #ffffff;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: var(--bg-color);
+      color: var(--text-main);
+      font-family: var(--font-body);
       min-height: 100vh;
       display: flex;
       flex-direction: column;
       align-items: center;
-      padding: 28px 24px 48px;
+      padding: 24px;
       user-select: none;
+      overflow-x: hidden;
+      position: relative;
     }
 
-    .logo {
-      font-size: 28px;
-      font-weight: 800;
-      color: #e53e3e;
-      letter-spacing: -1px;
+    /* Breathtaking background decorative glows */
+    body::before {
+      content: '';
+      position: absolute;
+      width: 300px;
+      height: 300px;
+      background: radial-gradient(circle, rgba(var(--red-accent-rgb), 0.08) 0%, rgba(var(--bg-color), 0) 70%);
+      top: -100px;
+      left: -50px;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    body::after {
+      content: '';
+      position: absolute;
+      width: 400px;
+      height: 400px;
+      background: radial-gradient(circle, rgba(var(--red-accent-rgb), 0.05) 0%, rgba(var(--bg-color), 0) 80%);
+      bottom: -150px;
+      right: -100px;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 390px;
+      z-index: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    /* Premium Header */
+    .header-block {
+      text-align: center;
       margin-bottom: 4px;
     }
 
-    .logo span { color: #fff; }
-
-    .subtitle {
-      font-size: 12px;
-      color: #555;
-      letter-spacing: 2px;
-      text-transform: uppercase;
-      margin-bottom: 24px;
+    .logo {
+      font-family: var(--font-display);
+      font-size: 32px;
+      font-weight: 800;
+      letter-spacing: -1.5px;
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
     }
 
+    .logo-red {
+      color: var(--red-accent);
+      text-shadow: 0 0 15px rgba(var(--red-accent-rgb), 0.4);
+    }
+
+    .logo-white {
+      color: var(--text-main);
+    }
+
+    .subtitle {
+      font-family: var(--font-display);
+      font-size: 11px;
+      color: var(--text-muted);
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      font-weight: 600;
+      margin-top: 2px;
+    }
+
+    /* Glassmorphic Cards */
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 16px;
+      padding: 20px;
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.4);
+      transition: border-color 0.3s, box-shadow 0.3s;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .card::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: linear-gradient(135deg, rgba(255, 255, 255, 0.02) 0%, rgba(255, 255, 255, 0) 100%);
+      pointer-events: none;
+    }
+
+    .card:hover {
+      border-color: rgba(var(--red-accent-rgb), 0.25);
+      box-shadow: 0 12px 40px 0 rgba(0, 0, 0, 0.5), 0 0 20px rgba(var(--red-accent-rgb), 0.05);
+    }
+
+    /* Status Bar Widget */
     .status-bar {
       display: flex;
       align-items: center;
-      gap: 8px;
-      background: #141414;
-      border: 1px solid #222;
-      border-radius: 8px;
-      padding: 10px 16px;
-      margin-bottom: 20px;
-      width: 100%;
-      max-width: 360px;
+      gap: 10px;
+      padding: 10px 14px;
+      background: rgba(28, 28, 30, 0.6);
+      border-radius: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.03);
     }
 
     .status-dot {
-      width: 10px;
-      height: 10px;
+      width: 8px;
+      height: 8px;
       border-radius: 50%;
-      background: #e53e3e;
+      background: var(--red-accent);
       flex-shrink: 0;
-      transition: background 0.3s;
+      transition: background 0.3s, box-shadow 0.3s;
+      box-shadow: 0 0 8px rgba(var(--red-accent-rgb), 0.6);
     }
 
     .status-dot.connecting {
-      background: #d69e2e;
-      animation: pulse 1s infinite;
+      background: var(--amber-accent);
+      box-shadow: 0 0 8px rgba(255, 149, 0, 0.6);
+      animation: pulse 1.2s infinite;
     }
 
     .status-dot.connected {
-      background: #48bb78;
-      box-shadow: 0 0 6px #48bb78;
+      background: var(--green-accent);
+      box-shadow: 0 0 10px rgba(var(--green-accent-rgb), 0.8);
       animation: none;
     }
 
     @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.4; }
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.9); }
     }
 
     .status-text {
       font-size: 13px;
-      color: #888;
+      font-weight: 500;
+      color: var(--text-muted);
+      transition: color 0.3s;
+    }
+
+    .status-dot.connected ~ .status-text {
+      color: var(--text-main);
     }
 
     .http-badge {
       margin-left: auto;
       font-size: 11px;
-      color: #444;
+      font-weight: 600;
+      color: var(--text-dark);
+      background: rgba(255, 255, 255, 0.03);
+      padding: 3px 8px;
+      border-radius: 6px;
       font-family: monospace;
-      letter-spacing: 0;
+      border: 1px solid rgba(255, 255, 255, 0.02);
+      transition: color 0.3s, background 0.3s, border-color 0.3s;
     }
 
-    .http-badge.active { color: #48bb78; }
+    .http-badge.active {
+      color: var(--green-accent);
+      background: rgba(var(--green-accent-rgb), 0.08);
+      border-color: rgba(var(--green-accent-rgb), 0.15);
+    }
 
+    /* Form Styles */
     .form {
-      width: 100%;
-      max-width: 360px;
       display: flex;
       flex-direction: column;
-      gap: 14px;
+      gap: 12px;
     }
 
     .field {
@@ -104,256 +229,499 @@
       gap: 6px;
     }
 
+    .row-fields {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
     label {
-      font-size: 12px;
-      color: #888;
-      letter-spacing: 0.5px;
+      font-family: var(--font-display);
+      font-size: 10px;
+      font-weight: 700;
+      color: var(--text-muted);
+      letter-spacing: 0.8px;
       text-transform: uppercase;
+      padding-left: 2px;
     }
 
     input, select {
-      background: #141414;
-      border: 1px solid #2a2a2a;
-      border-radius: 8px;
-      color: #fff;
-      font-size: 14px;
-      padding: 12px 14px;
+      background: var(--input-bg);
+      border: 1px solid var(--input-border);
+      border-radius: 10px;
+      color: var(--text-main);
+      font-size: 13.5px;
+      font-family: var(--font-body);
+      padding: 11px 12px;
       outline: none;
-      transition: border-color 0.2s;
+      transition: border-color 0.25s, box-shadow 0.25s, background-color 0.25s;
       width: 100%;
       appearance: none;
     }
 
-    input::placeholder { color: #444; }
+    input::placeholder {
+      color: #48484a;
+    }
 
     input:focus, select:focus {
-      border-color: #e53e3e;
+      border-color: var(--red-accent);
+      box-shadow: 0 0 0 3px rgba(var(--red-accent-rgb), 0.15);
+      background-color: rgba(28, 28, 30, 0.9);
+    }
+
+    /* Custom select dropdown styling */
+    .select-wrapper {
+      position: relative;
+      width: 100%;
+    }
+
+    .select-wrapper::after {
+      content: '';
+      position: absolute;
+      right: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 0;
+      height: 0;
+      border-left: 5px solid transparent;
+      border-right: 5px solid transparent;
+      border-top: 5px solid var(--text-muted);
+      pointer-events: none;
+      transition: border-top-color 0.25s;
+    }
+
+    .select-wrapper:focus-within::after {
+      border-top-color: var(--red-accent);
     }
 
     select {
+      padding-right: 32px;
       cursor: pointer;
-      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23888' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
-      background-repeat: no-repeat;
-      background-position: right 14px center;
-      padding-right: 36px;
     }
 
     select option {
-      background: #141414;
-      color: #fff;
+      background: #1c1c1e;
+      color: var(--text-main);
     }
 
+    /* Premium Buttons */
     .buttons {
       display: flex;
       flex-direction: column;
       gap: 10px;
-      margin-top: 4px;
+      margin-top: 8px;
     }
 
     .btn {
-      padding: 13px;
-      border-radius: 8px;
-      font-size: 14px;
+      padding: 12px;
+      border-radius: 10px;
+      font-family: var(--font-display);
+      font-size: 13.5px;
       font-weight: 600;
       cursor: pointer;
       border: none;
-      transition: opacity 0.2s, transform 0.1s;
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
       letter-spacing: 0.3px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
     }
 
-    .btn:active { transform: scale(0.98); }
-    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn:active {
+      transform: scale(0.975);
+    }
+
+    .btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+      transform: none !important;
+    }
 
     .btn-primary {
-      background: #e53e3e;
+      background: linear-gradient(135deg, var(--red-accent) 0%, #d62f26 100%);
       color: #fff;
+      box-shadow: 0 4px 15px rgba(var(--red-accent-rgb), 0.25);
     }
 
-    .btn-primary:hover:not(:disabled) { background: #c53030; }
+    .btn-primary:hover:not(:disabled) {
+      background: linear-gradient(135deg, #ff453a 0%, #e53935 100%);
+      box-shadow: 0 6px 20px rgba(var(--red-accent-rgb), 0.35);
+      transform: translateY(-1px);
+    }
 
     .btn-secondary {
-      background: #1a1a1a;
-      color: #aaa;
-      border: 1px solid #2a2a2a;
+      background: rgba(255, 255, 255, 0.04);
+      color: rgba(255, 255, 255, 0.85);
+      border: 1px solid rgba(255, 255, 255, 0.06);
     }
 
     .btn-secondary:hover:not(:disabled) {
-      background: #222;
+      background: rgba(255, 255, 255, 0.08);
       color: #fff;
+      border-color: rgba(255, 255, 255, 0.15);
+      transform: translateY(-1px);
     }
 
     .btn-reset {
       background: transparent;
-      color: #3a3a3a;
+      color: var(--text-dark);
       border: none;
-      font-size: 12px;
-      padding: 6px;
-      font-weight: 400;
-      text-decoration: underline;
-      text-decoration-color: #2a2a2a;
+      font-size: 11px;
+      font-weight: 500;
+      text-decoration: none;
+      padding: 4px;
+      align-self: center;
+      transition: color 0.25s;
     }
 
-    .btn-reset:hover:not(:disabled) { color: #666; }
+    .btn-reset:hover:not(:disabled) {
+      color: var(--text-muted);
+      text-decoration: underline;
+    }
 
-    /* ── Activity log ── */
-    .log-box {
-      width: 100%;
-      max-width: 360px;
-      margin-top: 16px;
-      background: #0e0e0e;
-      border: 1px solid #1e1e1e;
+    /* Beautiful Update Center Row */
+    .update-center {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 8px 12px;
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid rgba(255, 255, 255, 0.03);
+      border-radius: 12px;
+    }
+
+    .update-info {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .update-version-label {
+      font-size: 12px;
+      font-weight: 600;
+      color: rgba(255, 255, 255, 0.9);
+    }
+
+    .update-status-label {
+      font-size: 10px;
+      font-weight: 500;
+      color: var(--text-muted);
+    }
+
+    .update-status-label.checking { color: var(--amber-accent); }
+    .update-status-label.available { color: var(--amber-accent); }
+    .update-status-label.up-to-date { color: var(--green-accent); }
+    .update-status-label.downloaded { color: var(--green-accent); }
+    .update-status-label.error { color: var(--red-accent); }
+
+    .btn-update {
+      padding: 7px 14px;
+      font-size: 11.5px;
       border-radius: 8px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      color: var(--text-main);
+      font-weight: 600;
+    }
+
+    .btn-update:hover:not(:disabled) {
+      background: rgba(255, 255, 255, 0.1);
+      border-color: rgba(255, 255, 255, 0.15);
+    }
+
+    .btn-update.downloaded {
+      background: linear-gradient(135deg, var(--green-accent) 0%, #28a745 100%);
+      color: #fff;
+      border: none;
+      box-shadow: 0 4px 12px rgba(var(--green-accent-rgb), 0.25);
+    }
+
+    .btn-update.downloaded:hover:not(:disabled) {
+      background: linear-gradient(135deg, #39d363 0%, #218838 100%);
+      box-shadow: 0 6px 16px rgba(var(--green-accent-rgb), 0.35);
+    }
+
+    /* Spinners & Animations */
+    .animate-spin {
+      animation: spin 1s linear infinite;
+      width: 12px;
+      height: 12px;
+      color: currentColor;
+    }
+
+    @keyframes spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+
+    .pulse-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+      animation: pulse-simple 1s infinite alternate;
+    }
+
+    @keyframes pulse-simple {
+      from { opacity: 0.3; transform: scale(0.8); }
+      to { opacity: 1; transform: scale(1.1); }
+    }
+
+    /* Activity Log Widget */
+    .log-box {
+      background: rgba(18, 18, 23, 0.5);
+      border: 1px solid var(--card-border);
+      border-radius: 14px;
       overflow: hidden;
+      display: flex;
+      flex-direction: column;
     }
 
     .log-header {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 8px 12px;
-      border-bottom: 1px solid #1e1e1e;
+      padding: 10px 14px;
+      background: rgba(255, 255, 255, 0.02);
+      border-bottom: 1px solid var(--card-border);
     }
 
     .log-title {
-      font-size: 11px;
-      color: #555;
+      font-family: var(--font-display);
+      font-size: 10px;
+      font-weight: 700;
+      color: var(--text-muted);
       letter-spacing: 1px;
       text-transform: uppercase;
     }
 
     .log-clear {
-      font-size: 11px;
-      color: #333;
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--text-dark);
       cursor: pointer;
       background: none;
       border: none;
-      padding: 0;
+      padding: 2px 6px;
+      border-radius: 4px;
+      transition: color 0.25s, background-color 0.25s;
     }
 
-    .log-clear:hover { color: #666; }
+    .log-clear:hover {
+      color: var(--text-muted);
+      background-color: rgba(255, 255, 255, 0.03);
+    }
 
     .log-entries {
-      height: 120px;
+      height: 110px;
       overflow-y: auto;
       padding: 8px 12px;
       display: flex;
       flex-direction: column;
-      gap: 3px;
+      gap: 4px;
     }
 
-    .log-entries::-webkit-scrollbar { width: 4px; }
-    .log-entries::-webkit-scrollbar-track { background: transparent; }
-    .log-entries::-webkit-scrollbar-thumb { background: #2a2a2a; border-radius: 2px; }
+    .log-entries::-webkit-scrollbar {
+      width: 4px;
+    }
+
+    .log-entries::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    .log-entries::-webkit-scrollbar-thumb {
+      background: var(--input-border);
+      border-radius: 2px;
+    }
 
     .log-entry {
       display: flex;
       gap: 8px;
-      font-size: 12px;
+      font-size: 11.5px;
       line-height: 1.4;
+      font-family: var(--font-body);
     }
 
     .log-time {
-      color: #333;
+      color: var(--text-dark);
       flex-shrink: 0;
       font-variant-numeric: tabular-nums;
+      font-weight: 500;
     }
 
-    .log-msg { color: #777; }
-    .log-msg.ok { color: #48bb78; }
-    .log-msg.warn { color: #d69e2e; }
-    .log-msg.err { color: #fc8181; }
+    .log-msg {
+      color: rgba(255, 255, 255, 0.6);
+    }
 
+    .log-msg.ok { color: var(--green-accent); }
+    .log-msg.warn { color: var(--amber-accent); }
+    .log-msg.err { color: #ff453a; }
+
+    /* Floating Status Message */
     .message {
-      font-size: 12px;
+      font-size: 12.5px;
+      font-weight: 500;
       text-align: center;
       padding: 10px;
-      border-radius: 6px;
+      border-radius: 10px;
       display: none;
       margin-top: 4px;
-      max-width: 360px;
       width: 100%;
+      animation: slideIn 0.3s ease-out;
     }
 
-    .message.success { background: #1a2e1a; color: #68d391; border: 1px solid #276749; }
-    .message.error   { background: #2d1a1a; color: #fc8181; border: 1px solid #742a2a; }
-    .message.show    { display: block; }
+    @keyframes slideIn {
+      from { opacity: 0; transform: translateY(5px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
 
-    .version {
-      position: fixed;
-      bottom: 12px;
-      color: #2a2a2a;
-      font-size: 11px;
+    .message.success {
+      background: rgba(var(--green-accent-rgb), 0.1);
+      color: #30d158;
+      border: 1px solid rgba(var(--green-accent-rgb), 0.25);
+    }
+
+    .message.error {
+      background: rgba(255, 69, 58, 0.1);
+      color: #ff453a;
+      border: 1px solid rgba(255, 69, 58, 0.25);
+    }
+
+    .message.show {
+      display: block;
+    }
+
+    /* Fixed Version Footer */
+    .footer-version {
+      text-align: center;
+      color: var(--text-dark);
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+      margin-top: 4px;
+      font-family: var(--font-display);
     }
   </style>
 </head>
 <body>
-  <div class="logo">Titi<span>Menu</span></div>
-  <div class="subtitle">Print Bridge</div>
-
-  <div class="status-bar">
-    <div class="status-dot" id="statusDot"></div>
-    <span class="status-text" id="statusText">Desconectado</span>
-    <span class="http-badge" id="httpBadge">HTTP —</span>
-  </div>
-
-  <form class="form" id="configForm" onsubmit="return false">
-    <div class="field">
-      <label>Business ID</label>
-      <input
-        type="text"
-        id="businessId"
-        placeholder="Pega tu Business ID aquí"
-        autocomplete="off"
-        spellcheck="false"
-      />
+  <div class="container">
+    <!-- Header -->
+    <div class="header-block">
+      <div class="logo">
+        <span class="logo-red">Titi</span><span class="logo-white">Menu</span>
+      </div>
+      <div class="subtitle">Print Bridge</div>
     </div>
 
-    <div class="field">
-      <label>Nombre del negocio</label>
-      <input
-        type="text"
-        id="businessName"
-        placeholder="Ej: Restaurant El Rincón"
-        autocomplete="off"
-      />
+    <!-- Status Widget -->
+    <div class="status-bar">
+      <div class="status-dot" id="statusDot"></div>
+      <span class="status-text" id="statusText">Desconectado</span>
+      <span class="http-badge" id="httpBadge">HTTP —</span>
     </div>
 
-    <div class="field">
-      <label>Impresora</label>
-      <select id="printerSelect">
-        <option value="">Cargando impresoras...</option>
-      </select>
+    <!-- Config Card -->
+    <div class="card">
+      <form class="form" id="configForm" onsubmit="return false">
+        <div class="field">
+          <label>Business ID</label>
+          <input
+            type="text"
+            id="businessId"
+            placeholder="Pega tu Business ID aquí"
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </div>
+
+        <div class="field">
+          <label>Nombre del negocio</label>
+          <input
+            type="text"
+            id="businessName"
+            placeholder="Ej: Restaurant El Rincón"
+            autocomplete="off"
+          />
+        </div>
+
+        <div class="field">
+          <label>Impresora</label>
+          <div class="select-wrapper">
+            <select id="printerSelect">
+              <option value="">Cargando impresoras...</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Row: Print Mode & Paper Width -->
+        <div class="row-fields">
+          <div class="field">
+            <label>Modo Impresión</label>
+            <div class="select-wrapper">
+              <select id="printModeSelect">
+                <option value="thermal">Directo ESC/POS</option>
+                <option value="system">Sistema OS / HTML</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="field">
+            <label>Ancho de Papel</label>
+            <div class="select-wrapper">
+              <select id="paperWidthSelect">
+                <option value="80mm">80mm (3 pulgadas)</option>
+                <option value="58mm">58mm (2 pulgadas)</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div class="buttons">
+          <button class="btn btn-primary" id="saveBtn" onclick="saveConfig()">
+            Guardar y conectar
+          </button>
+          <button class="btn btn-secondary" id="testBtn" onclick="testPrint()">
+            Probar impresión
+          </button>
+          <button class="btn btn-reset" id="resetBtn" onclick="resetConfig()">
+            Resetear configuración
+          </button>
+        </div>
+
+        <div class="message" id="message"></div>
+      </form>
     </div>
 
-    <div class="buttons">
-      <button class="btn btn-primary" id="saveBtn" onclick="saveConfig()">
-        Guardar y conectar
+    <!-- Live Update Widget -->
+    <div class="update-center">
+      <div class="update-info">
+        <span class="update-version-label" id="appVersion">v1.0.1</span>
+        <span class="update-status-label" id="updateStatusText">Al día</span>
+      </div>
+      <button class="btn-update" id="updateBtn" onclick="checkUpdates()">
+        Buscar actualización
       </button>
-      <button class="btn btn-secondary" id="testBtn" onclick="testPrint()">
-        Probar impresión
-      </button>
-      <button class="btn btn-reset" id="resetBtn" onclick="resetConfig()">
-        Resetear configuración
-      </button>
     </div>
 
-    <div class="message" id="message"></div>
-  </form>
-
-  <div class="log-box">
-    <div class="log-header">
-      <span class="log-title">Actividad</span>
-      <button class="log-clear" onclick="clearLog()">limpiar</button>
-    </div>
-    <div class="log-entries" id="logEntries">
-      <div class="log-entry">
-        <span class="log-time">--:--</span>
-        <span class="log-msg">Iniciando...</span>
+    <!-- Activity Log Card -->
+    <div class="log-box">
+      <div class="log-header">
+        <span class="log-title">Actividad</span>
+        <button class="log-clear" onclick="clearLog()">limpiar</button>
+      </div>
+      <div class="log-entries" id="logEntries">
+        <div class="log-entry">
+          <span class="log-time">--:--</span>
+          <span class="log-msg">Iniciando...</span>
+        </div>
       </div>
     </div>
-  </div>
 
-  <div class="version">v1.0.0</div>
+    <!-- Small Footer -->
+    <div class="footer-version">TITIMENU PRINT SYSTEM</div>
+  </div>
 
   <script>
     let isSaving = false
@@ -363,9 +731,9 @@
       await loadConfig()
       listenStatus()
       listenLogs()
+      listenUpdates()
     }
 
-    // ── Fix #2: never bail early — always render whatever getPrinters returns ──
     async function loadPrinters() {
       const select = document.getElementById('printerSelect')
       try {
@@ -397,12 +765,23 @@
             if (opt.value === config.printerName) { sel.value = config.printerName; break }
           }
         }
+        if (config.printMode) {
+          document.getElementById('printModeSelect').value = config.printMode
+        }
+        if (config.paperWidth) {
+          document.getElementById('paperWidthSelect').value = config.paperWidth
+        }
+        if (config.version) {
+          document.getElementById('appVersion').textContent = `v${config.version}`
+        }
         if (config.httpPort) {
           const badge = document.getElementById('httpBadge')
           badge.textContent = `HTTP :${config.httpPort}`
           badge.classList.add('active')
         }
-      } catch (_) {}
+      } catch (e) {
+        addLog('Error al cargar config: ' + e.message, 'err')
+      }
     }
 
     function listenStatus() {
@@ -410,12 +789,19 @@
       window.electronAPI.getStatus().then(s => updateStatus(s))
     }
 
-    // ── Fix #3: receive log lines from main process ───────────────────────────
     function listenLogs() {
       window.electronAPI.onLogMessage((text) => {
-        const isOk = /suscrito|esperando|conectado/i.test(text)
+        const isOk = /suscrito|esperando|conectado|✅|activo/i.test(text)
         const isErr = /error|cerrado|fallo/i.test(text)
-        addLog(text, isErr ? 'err' : isOk ? 'ok' : 'warn')
+        addLog(text, isErr ? 'err' : isOk ? 'ok' : '')
+      })
+    }
+
+    function listenUpdates() {
+      window.electronAPI.onUpdateStatus((data) => {
+        if (data) {
+          updateUpdaterUI(data.status, data.details)
+        }
       })
     }
 
@@ -434,7 +820,6 @@
       document.getElementById('logEntries').innerHTML = ''
     }
 
-    // ── Fix #1: stay in "Conectando..." until status-change fires ────────────
     function updateStatus(connected) {
       const dot = document.getElementById('statusDot')
       const text = document.getElementById('statusText')
@@ -443,7 +828,6 @@
       if (connected) {
         dot.className = 'status-dot connected'
         text.textContent = 'Conectado a TitiMenu'
-        // Restore button only when actually connected
         if (isSaving) {
           isSaving = false
           btn.disabled = false
@@ -463,6 +847,8 @@
       const businessId = document.getElementById('businessId').value.trim()
       const businessName = document.getElementById('businessName').value.trim()
       const printerName = document.getElementById('printerSelect').value
+      const printMode = document.getElementById('printModeSelect').value
+      const paperWidth = document.getElementById('paperWidthSelect').value
 
       if (!businessId)   { showMessage('Ingresa tu Business ID', 'error'); return }
       if (!businessName) { showMessage('Ingresa el nombre del negocio', 'error'); return }
@@ -479,9 +865,8 @@
       text.textContent = 'Conectando a Supabase...'
 
       try {
-        await window.electronAPI.saveConfig({ businessId, businessName, printerName })
+        await window.electronAPI.saveConfig({ businessId, businessName, printerName, printMode, paperWidth })
         addLog('Configuración guardada — iniciando conexión...', 'warn')
-        // Button stays disabled; updateStatus(true) will restore it
       } catch (e) {
         isSaving = false
         btn.disabled = false
@@ -522,6 +907,8 @@
         document.getElementById('businessId').value = ''
         document.getElementById('businessName').value = ''
         document.getElementById('printerSelect').selectedIndex = 0
+        document.getElementById('printModeSelect').value = 'thermal'
+        document.getElementById('paperWidthSelect').value = '80mm'
         document.getElementById('statusDot').className = 'status-dot'
         document.getElementById('statusText').textContent = 'Desconectado'
         isSaving = false
@@ -532,6 +919,71 @@
         showMessage('Configuración borrada', 'success')
       } catch (e) {
         showMessage('Error al resetear: ' + e.message, 'error')
+      }
+    }
+
+    async function checkUpdates() {
+      const btn = document.getElementById('updateBtn')
+      btn.disabled = true
+      btn.innerHTML = `<svg class="animate-spin" viewBox="0 0 24 24" fill="none" style="width:12px;height:12px;margin-right:4px;"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none" stroke-dasharray="32" stroke-dashoffset="8" style="opacity:0.3;"></circle><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none" stroke-dasharray="32" stroke-dashoffset="24"></circle></svg> Buscando...`
+      addLog('Iniciando búsqueda de actualizaciones...', 'warn')
+      
+      try {
+        const res = await window.electronAPI.checkForUpdates()
+        if (!res.success) {
+          updateUpdaterUI('error', res.error)
+        }
+      } catch (e) {
+        updateUpdaterUI('error', e.message)
+      }
+    }
+
+    function updateUpdaterUI(status, details) {
+      const btn = document.getElementById('updateBtn')
+      const statusText = document.getElementById('updateStatusText')
+      
+      btn.className = 'btn-update'
+      btn.disabled = false
+      btn.onclick = checkUpdates
+      
+      if (status === 'checking') {
+        btn.disabled = true
+        btn.innerHTML = `<svg class="animate-spin" viewBox="0 0 24 24" fill="none" style="width:12px;height:12px;margin-right:4px;display:inline-block;"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none" stroke-dasharray="32" stroke-dashoffset="8" style="opacity:0.2;"></circle><path d="M12 2C6.47715 2 2 6.47715 2 12C2 13.5 2.5 15 3.5 16.5" stroke="currentColor" stroke-width="4" stroke-linecap="round"></path></svg> Buscando...`
+        statusText.textContent = 'Buscando actualizaciones...'
+        statusText.className = 'update-status-label checking'
+      } else if (status === 'available') {
+        btn.disabled = true
+        btn.innerHTML = `<span class="pulse-dot"></span> Descargando...`
+        statusText.textContent = `Descargando v${details?.version || ''}...`
+        statusText.className = 'update-status-label available'
+        addLog(`Actualización disponible: v${details?.version}. Descargando en segundo plano...`, 'ok')
+      } else if (status === 'not-available') {
+        btn.innerHTML = `Buscar actualización`
+        statusText.textContent = 'Aplicación al día'
+        statusText.className = 'update-status-label up-to-date'
+        addLog('Aplicación al día. Tienes la última versión.', 'ok')
+        setTimeout(() => {
+          statusText.textContent = 'Al día'
+          statusText.className = 'update-status-label'
+        }, 3000)
+      } else if (status === 'downloaded') {
+        btn.innerHTML = `Reiniciar y actualizar`
+        btn.className = 'btn-update downloaded'
+        statusText.textContent = `v${details?.version || ''} lista para instalar`
+        statusText.className = 'update-status-label downloaded'
+        addLog(`✅ Actualización v${details?.version} descargada. Haz clic en "Reiniciar y actualizar".`, 'ok')
+        btn.onclick = () => {
+          window.electronAPI.quitAndInstall()
+        }
+      } else if (status === 'error') {
+        btn.innerHTML = `Buscar actualización`
+        statusText.textContent = 'Error al actualizar'
+        statusText.className = 'update-status-label error'
+        addLog(`Error al buscar actualizaciones: ${details || ''}`, 'err')
+        setTimeout(() => {
+          statusText.textContent = 'Al día'
+          statusText.className = 'update-status-label'
+        }, 4000)
       }
     }
 

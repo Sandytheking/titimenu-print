@@ -1,6 +1,6 @@
 {
   "name": "titimenu-print-bridge",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "TitiMenu Print Bridge - Thermal printer integration",
   "main": "main.js",
   "scripts": {
@@ -37,6 +37,13 @@
       "target": [
         {
           "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
           "arch": [
             "x64",
             "arm64"
