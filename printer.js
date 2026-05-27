@@ -1042,6 +1042,115 @@ async function printFiscalReceipt(data, printerName) {
   await printer.execute()
 }
 
+async function printStationComanda(stationTitle, items, printerName, orderInfo) {
+  if (!printerName || printerName === '— No usar —') return
+
+  const printMode = store.get('printMode', 'thermal')
+  const paperWidth = store.get('paperWidth', '80mm')
+  
+  const tableLabel = orderInfo.table_label || orderInfo.table_number || orderInfo.table_id || '?'
+  const shortId = (orderInfo.id || orderInfo.order_number || '000000').slice(-6).toUpperCase()
+
+  if (printMode === 'system') {
+    const html = generateStationComandaHTML(stationTitle, items, orderInfo, paperWidth)
+    await printHTML(html, printerName)
+    return
+  }
+
+  const LINE = '================================'
+  const now = new Date()
+  const dateStr = now.toLocaleDateString('es-DO', { day: '2-digit', month: '2-digit', year: 'numeric' }) + '  ' + now.toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' })
+
+  if (isTestMode(printerName)) {
+    const lines = [
+      LINE,
+      center(`** ${stationTitle} - MESA ${tableLabel} **`),
+      center(dateStr),
+      LINE,
+      ...items.map(i => `${i.quantity || i.qty || 1}x ${i.name || i.product_name || ''}` + (i.notes ? `\n   * ${i.notes}` : '')),
+      LINE,
+      center(`Orden #${shortId}`),
+      LINE,
+      '[CORTE]'
+    ]
+    writeTestOutput(lines)
+    return
+  }
+
+  const printer = await createPrinter(printerName)
+  if (!await printer.isPrinterConnected()) throw new Error('Impresora no disponible')
+
+  printer.alignCenter()
+  printer.println(LINE)
+  printer.bold(true)
+  printer.println(center(`** ${stationTitle} - MESA ${tableLabel} **`))
+  printer.bold(false)
+  printer.println(center(dateStr))
+  printer.println(LINE)
+  printer.alignLeft()
+
+  items.forEach(item => {
+    printer.println(`${item.quantity || item.qty || 1}x ${item.name || item.product_name || ''}`)
+    if (item.notes || item.special_instructions) printer.println(`   * ${item.notes || item.special_instructions}`)
+  })
+
+  printer.alignCenter()
+  printer.println(LINE)
+  printer.println(center(`Orden #${shortId}`))
+  printer.println(LINE)
+  printer.cut()
+  await printer.execute()
+}
+
+function generateStationComandaHTML(stationTitle, items, orderInfo, paperWidth) {
+  const now = new Date()
+  const dateStr = now.toLocaleDateString('es-DO', { day: '2-digit', month: '2-digit', year: 'numeric' }) + ' ' + now.toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' })
+  const tableLabel = orderInfo.table_label || orderInfo.table_number || orderInfo.table_id || '?'
+  const shortId = (orderInfo.id || orderInfo.order_number || '000000').slice(-6).toUpperCase()
+
+  const itemsHtml = items.map(item => {
+    const qty = item.quantity || item.qty || 1
+    const name = item.name || item.product_name || ''
+    const notes = item.notes || item.special_instructions || ''
+    return `
+      <div style="padding: 3px 0; font-size: 1.1em;">
+        <span class="bold">${qty}x</span> ${name}
+        ${notes ? `<div class="notes">* ${notes}</div>` : ''}
+      </div>
+    `
+  }).join('')
+
+  const bodyContent = `
+    <div class="header center">
+      <div class="text-large">** ${stationTitle} **</div>
+      <div class="tag" style="font-size: 1.15em;">MESA ${tableLabel}</div>
+      <div class="business-details" style="margin-top: 4px;">${dateStr}</div>
+    </div>
+    
+    <div class="divider"></div>
+    
+    <div>
+      ${itemsHtml}
+    </div>
+    
+    <div class="divider-double"></div>
+    
+    <div class="footer center bold">
+      Orden #${shortId}
+    </div>
+  `
+
+  return getBaseHTML(getReceiptStyles(paperWidth), bodyContent)
+}
+
+async function printKitchenComanda(items, printerName, orderInfo) {
+  return await printStationComanda('COMANDA COCINA', items, printerName, orderInfo)
+}
+
+async function printBarComanda(items, printerName, orderInfo) {
+  return await printStationComanda('COMANDA BAR', items, printerName, orderInfo)
+}
+
 module.exports = {
   getUSBPrinters,
   printPOSReceipt,
@@ -1049,5 +1158,7 @@ module.exports = {
   printTableComanda,
   printDeliveryTicket,
   printTestPage,
+  printKitchenComanda,
+  printBarComanda,
   TEST_PRINTER_NAME
 }

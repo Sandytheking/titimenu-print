@@ -647,9 +647,27 @@
         </div>
 
         <div class="field">
-          <label>Impresora</label>
+          <label>🖨️ Impresora de Caja (Facturas/POS)</label>
           <div class="select-wrapper">
-            <select id="printerSelect">
+            <select id="printerCajaSelect">
+              <option value="">Cargando impresoras...</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>👨‍🍳 Impresora de Cocina (Comida)</label>
+          <div class="select-wrapper">
+            <select id="printerCocinaSelect">
+              <option value="">Cargando impresoras...</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>🍸 Impresora de Bar (Bebidas)</label>
+          <div class="select-wrapper">
+            <select id="printerBarSelect">
               <option value="">Cargando impresoras...</option>
             </select>
           </div>
@@ -735,21 +753,36 @@
     }
 
     async function loadPrinters() {
-      const select = document.getElementById('printerSelect')
+      const selectCaja = document.getElementById('printerCajaSelect')
+      const selectCocina = document.getElementById('printerCocinaSelect')
+      const selectBar = document.getElementById('printerBarSelect')
       try {
         const printers = await window.electronAPI.getPrinters()
-        select.innerHTML = ''
-        printers.forEach(p => {
-          const opt = document.createElement('option')
-          opt.value = p.name
-          opt.textContent = p.displayName || p.name
-          select.appendChild(opt)
-        })
-        if (select.options.length === 0) {
-          select.innerHTML = '<option value="">Sin impresoras detectadas</option>'
+        
+        const populate = (select) => {
+          select.innerHTML = ''
+          
+          const noUseOpt = document.createElement('option')
+          noUseOpt.value = ''
+          noUseOpt.textContent = '— No usar —'
+          select.appendChild(noUseOpt)
+          
+          printers.forEach(p => {
+            const opt = document.createElement('option')
+            opt.value = p.name
+            opt.textContent = p.displayName || p.name
+            select.appendChild(opt)
+          })
         }
+
+        populate(selectCaja)
+        populate(selectCocina)
+        populate(selectBar)
       } catch (e) {
-        select.innerHTML = '<option value="">Error al cargar impresoras</option>'
+        const errHtml = '<option value="">Error al cargar impresoras</option>'
+        selectCaja.innerHTML = errHtml
+        selectCocina.innerHTML = errHtml
+        selectBar.innerHTML = errHtml
         addLog('Error cargando impresoras: ' + e.message, 'err')
       }
     }
@@ -759,12 +792,17 @@
         const config = await window.electronAPI.getConfig()
         if (config.businessId) document.getElementById('businessId').value = config.businessId
         if (config.businessName) document.getElementById('businessName').value = config.businessName
-        if (config.printerName) {
-          const sel = document.getElementById('printerSelect')
-          for (const opt of sel.options) {
-            if (opt.value === config.printerName) { sel.value = config.printerName; break }
-          }
+        
+        const setSelectValue = (selectId, val) => {
+          const sel = document.getElementById(selectId)
+          if (!sel) return
+          sel.value = val || ''
         }
+
+        setSelectValue('printerCajaSelect', config.printerCaja || config.printerName)
+        setSelectValue('printerCocinaSelect', config.printerCocina || config.printerName)
+        setSelectValue('printerBarSelect', config.printerBar || config.printerName)
+
         if (config.printMode) {
           document.getElementById('printModeSelect').value = config.printMode
         }
@@ -846,13 +884,18 @@
     async function saveConfig() {
       const businessId = document.getElementById('businessId').value.trim()
       const businessName = document.getElementById('businessName').value.trim()
-      const printerName = document.getElementById('printerSelect').value
+      const printerCaja = document.getElementById('printerCajaSelect').value
+      const printerCocina = document.getElementById('printerCocinaSelect').value
+      const printerBar = document.getElementById('printerBarSelect').value
       const printMode = document.getElementById('printModeSelect').value
       const paperWidth = document.getElementById('paperWidthSelect').value
 
       if (!businessId)   { showMessage('Ingresa tu Business ID', 'error'); return }
       if (!businessName) { showMessage('Ingresa el nombre del negocio', 'error'); return }
-      if (!printerName)  { showMessage('Selecciona una impresora', 'error'); return }
+      if (!printerCaja && !printerCocina && !printerBar) {
+        showMessage('Selecciona al menos una impresora activa', 'error')
+        return
+      }
 
       const btn = document.getElementById('saveBtn')
       const dot = document.getElementById('statusDot')
@@ -865,7 +908,16 @@
       text.textContent = 'Conectando a Supabase...'
 
       try {
-        await window.electronAPI.saveConfig({ businessId, businessName, printerName, printMode, paperWidth })
+        await window.electronAPI.saveConfig({
+          businessId,
+          businessName,
+          printerName: printerCaja || printerCocina || printerBar, // backward compatibility
+          printerCaja,
+          printerCocina,
+          printerBar,
+          printMode,
+          paperWidth
+        })
         addLog('Configuración guardada — iniciando conexión...', 'warn')
       } catch (e) {
         isSaving = false
@@ -906,7 +958,9 @@
         await window.electronAPI.resetConfig()
         document.getElementById('businessId').value = ''
         document.getElementById('businessName').value = ''
-        document.getElementById('printerSelect').selectedIndex = 0
+        document.getElementById('printerCajaSelect').selectedIndex = 0
+        document.getElementById('printerCocinaSelect').selectedIndex = 0
+        document.getElementById('printerBarSelect').selectedIndex = 0
         document.getElementById('printModeSelect').value = 'thermal'
         document.getElementById('paperWidthSelect').value = '80mm'
         document.getElementById('statusDot').className = 'status-dot'

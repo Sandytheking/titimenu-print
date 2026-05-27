@@ -3,7 +3,7 @@ const { autoUpdater } = require('electron-updater')
 const path = require('path')
 const http = require('http')
 const Store = require('electron-store')
-const { getUSBPrinters, printPOSReceipt, printFiscalReceipt, printTableComanda, printDeliveryTicket, printTestPage, TEST_PRINTER_NAME } = require('./printer')
+const { getUSBPrinters, printPOSReceipt, printFiscalReceipt, printTableComanda, printDeliveryTicket, printKitchenComanda, printBarComanda, printTestPage, TEST_PRINTER_NAME } = require('./printer')
 const { setCallbacks, startListening, disconnect, fetchBusinessInfo } = require('./supabase')
 
 const store = new Store()
@@ -207,18 +207,38 @@ function onStatusChange(connected) {
 // ─── New Order Handler ────────────────────────────────────────────────────────
 
 async function onNewOrder(type, order) {
-  const printerName = store.get('printerName')
+  const legacyPrinter = store.get('printerName', '')
+  const printerCaja = store.get('printerCaja') || legacyPrinter || ''
+  const printerCocina = store.get('printerCocina') || legacyPrinter || ''
+  const printerBar = store.get('printerBar') || legacyPrinter || ''
   const businessName = store.get('businessName', 'Mi Negocio')
 
-  if (!printerName) {
+  if (!printerCaja && !printerCocina && !printerBar) {
     new Notification({
       title: 'TitiMenu Print Bridge',
-      body: 'Nueva orden recibida pero no hay impresora configurada'
+      body: 'Nueva orden recibida pero no hay ninguna impresora activa configurada'
     }).show()
     return
   }
 
-  const testMode = printerName === TEST_PRINTER_NAME
+  const items = order.items || order.order_items || []
+  const foodItems = items.filter(item => item.product_type !== 'drink')
+  const drinkItems = items.filter(item => item.product_type === 'drink')
+
+  const printComandas = async () => {
+    if (printerCocina === printerBar) {
+      if (printerCocina) {
+        await printTableComanda(order, printerCocina, businessName)
+      }
+    } else {
+      if (foodItems.length > 0 && printerCocina) {
+        await printKitchenComanda(foodItems, printerCocina, order)
+      }
+      if (drinkItems.length > 0 && printerBar) {
+        await printBarComanda(drinkItems, printerBar, order)
+      }
+    }
+  }
 
   try {
     if (type === 'pos') {
@@ -228,24 +248,25 @@ async function onNewOrder(type, order) {
         rnc: store.get('businessRnc', ''),
         address: store.get('businessAddress', '')
       }
-      await printPOSReceipt(order, printerName, businessInfo)
+      if (printerCaja) {
+        await printPOSReceipt(order, printerCaja, businessInfo)
+      }
+      // Also separate and print kitchen/bar comandas for POS orders!
+      await printComandas()
     } else if (type === 'table') {
-      await printTableComanda(order, printerName, businessName)
+      await printComandas()
     } else if (type === 'delivery') {
-      await printDeliveryTicket(order, printerName, businessName)
-    }
-
-    if (testMode) {
-      new Notification({
-        title: 'Impresión simulada',
-        body: 'Ver /tmp/titimenu-print-test.txt'
-      }).show()
+      if (printerCaja) {
+        await printDeliveryTicket(order, printerCaja, businessName)
+      }
+      // Also separate and print kitchen/bar comandas for delivery orders!
+      await printComandas()
     }
   } catch (err) {
     console.error('Print error:', err.message)
     new Notification({
       title: 'Error de impresión',
-      body: err.message || 'No se pudo imprimir. Verifica que la impresora esté encendida.'
+      body: err.message || 'No se pudo imprimir. Verifica que las impresoras estén encendidas.'
     }).show()
   }
 }
@@ -300,10 +321,11 @@ async function handleRequest(req, res) {
     if (req.method === 'POST' && urlPath === '/print-receipt') {
       console.log('[HTTP] POST /print-receipt recibido')
       const data = await parseBody(req)
-      const printerName = store.get('printerName')
-      if (!printerName) {
+      const legacyPrinter = store.get('printerName', '')
+      const printerCaja = store.get('printerCaja') || legacyPrinter || ''
+      if (!printerCaja) {
         res.writeHead(503, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ error: 'No hay impresora configurada' }))
+        res.end(JSON.stringify({ error: 'No hay impresora de caja configurada' }))
         return
       }
       const order = {
@@ -324,7 +346,7 @@ async function handleRequest(req, res) {
         rnc: store.get('businessRnc', ''),
         address: store.get('businessAddress', '')
       }
-      await printPOSReceipt(order, printerName, businessInfo)
+      await printPOSReceipt(order, printerCaja, businessInfo)
       sendLog(`HTTP: Recibo impreso — Orden #${data.order_number}`)
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ success: true }))
@@ -334,13 +356,14 @@ async function handleRequest(req, res) {
     if (req.method === 'POST' && urlPath === '/print-fiscal') {
       console.log('[HTTP] POST /print-fiscal recibido')
       const data = await parseBody(req)
-      const printerName = store.get('printerName')
-      if (!printerName) {
+      const legacyPrinter = store.get('printerName', '')
+      const printerCaja = store.get('printerCaja') || legacyPrinter || ''
+      if (!printerCaja) {
         res.writeHead(503, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ error: 'No hay impresora configurada' }))
+        res.end(JSON.stringify({ error: 'No hay impresora de caja configurada' }))
         return
       }
-      await printFiscalReceipt(data, printerName)
+      await printFiscalReceipt(data, printerCaja)
       sendLog(`HTTP: Comprobante fiscal impreso — ${data.ncf || ''}`)
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ success: true }))
@@ -349,10 +372,12 @@ async function handleRequest(req, res) {
 
     if (req.method === 'POST' && urlPath === '/print-comanda') {
       const data = await parseBody(req)
-      const printerName = store.get('printerName')
+      const legacyPrinter = store.get('printerName', '')
+      const printerCocina = store.get('printerCocina') || legacyPrinter || ''
+      const printerName = data.target_printer || printerCocina
       if (!printerName) {
         res.writeHead(503, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ error: 'No hay impresora configurada' }))
+        res.end(JSON.stringify({ error: 'No hay impresora configurada para comanda' }))
         return
       }
       const order = {
@@ -407,20 +432,29 @@ async function startHttpServer() {
 
 // ─── IPC Handlers ─────────────────────────────────────────────────────────────
 
-ipcMain.handle('get-config', () => ({
-  businessId: store.get('businessId', ''),
-  businessName: store.get('businessName', ''),
-  printerName: store.get('printerName', ''),
-  printMode: store.get('printMode', 'thermal'),
-  paperWidth: store.get('paperWidth', '80mm'),
-  httpPort: activePort || store.get('httpPort', null),
-  version: app.getVersion()
-}))
+ipcMain.handle('get-config', () => {
+  const legacyPrinter = store.get('printerName', '')
+  return {
+    businessId: store.get('businessId', ''),
+    businessName: store.get('businessName', ''),
+    printerName: legacyPrinter,
+    printerCaja: store.get('printerCaja', legacyPrinter),
+    printerCocina: store.get('printerCocina', legacyPrinter),
+    printerBar: store.get('printerBar', legacyPrinter),
+    printMode: store.get('printMode', 'thermal'),
+    paperWidth: store.get('paperWidth', '80mm'),
+    httpPort: activePort || store.get('httpPort', null),
+    version: app.getVersion()
+  }
+})
 
 ipcMain.handle('save-config', async (_event, config) => {
   store.set('businessId', config.businessId)
   store.set('businessName', config.businessName)
-  store.set('printerName', config.printerName)
+  store.set('printerName', config.printerName) // Keep it for legacy fallback
+  store.set('printerCaja', config.printerCaja || '')
+  store.set('printerCocina', config.printerCocina || '')
+  store.set('printerBar', config.printerBar || '')
   store.set('printMode', config.printMode || 'thermal')
   store.set('paperWidth', config.paperWidth || '80mm')
 
@@ -441,12 +475,24 @@ ipcMain.handle('get-printers', async () => {
 })
 
 ipcMain.handle('test-print', async () => {
-  const printerName = store.get('printerName')
+  const legacyPrinter = store.get('printerName', '')
+  const printerCaja = store.get('printerCaja') || legacyPrinter || ''
+  const printerCocina = store.get('printerCocina') || legacyPrinter || ''
+  const printerBar = store.get('printerBar') || legacyPrinter || ''
   const businessName = store.get('businessName', 'Mi Negocio')
-  if (!printerName) return { success: false, error: 'No hay impresora configurada' }
+
+  const activePrinters = [...new Set([printerCaja, printerCocina, printerBar].filter(Boolean))]
+  if (activePrinters.length === 0) return { success: false, error: 'No hay ninguna impresora configurada para probar' }
+
   try {
-    await printTestPage(printerName, businessName)
-    if (printerName === TEST_PRINTER_NAME) {
+    let hasTestMode = false
+    for (const printer of activePrinters) {
+      await printTestPage(printer, businessName)
+      if (printer === TEST_PRINTER_NAME) {
+        hasTestMode = true
+      }
+    }
+    if (hasTestMode) {
       new Notification({
         title: 'Impresión simulada',
         body: 'Ver /tmp/titimenu-print-test.txt'
