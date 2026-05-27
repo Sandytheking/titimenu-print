@@ -287,7 +287,9 @@ async function handleRequest(req, res) {
     if (req.method === 'GET' && urlPath === '/status') {
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({
-        connected: isConnected,
+        connected: true,
+        supabase_connected: isConnected,
+        version: app.getVersion(),
         printer: store.get('printerName', ''),
         business: store.get('businessName', '')
       }))
