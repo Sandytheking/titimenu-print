@@ -295,6 +295,7 @@ async function handleRequest(req, res) {
     }
 
     if (req.method === 'POST' && urlPath === '/print-receipt') {
+      console.log('[HTTP] POST /print-receipt recibido')
       const data = await parseBody(req)
       const printerName = store.get('printerName')
       if (!printerName) {
@@ -328,6 +329,7 @@ async function handleRequest(req, res) {
     }
 
     if (req.method === 'POST' && urlPath === '/print-fiscal') {
+      console.log('[HTTP] POST /print-fiscal recibido')
       const data = await parseBody(req)
       const printerName = store.get('printerName')
       if (!printerName) {
@@ -380,7 +382,7 @@ async function startHttpServer() {
       await new Promise((resolve, reject) => {
         const server = http.createServer(handleRequest)
         server.once('error', reject)
-        server.listen(port, '127.0.0.1', () => {
+        server.listen(port, '0.0.0.0', () => {
           httpServer = server
           activePort = port
           store.set('httpPort', port)
