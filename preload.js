@@ -11,5 +11,5 @@ contextBridge.exposeInMainWorld('electronAPI', {
   resetConfig: () => ipcRenderer.invoke('reset-config'),
   checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
   onUpdateStatus: (callback) => ipcRenderer.on('update-status', (_event, data) => callback(data)),
-  quitAndInstall: () => ipcRenderer.invoke('quit-and-install')
+  quitAndInstall: () => ipcRenderer.send('quit-and-install')
 })

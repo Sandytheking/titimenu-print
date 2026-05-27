@@ -476,9 +476,9 @@ ipcMain.handle('check-for-updates', async () => {
   }
 })
 
-ipcMain.handle('quit-and-install', () => {
+ipcMain.on('quit-and-install', () => {
+  console.log('[updater] quit-and-install called')
   autoUpdater.quitAndInstall()
-  return { success: true }
 })
 
 // ─── App Lifecycle ────────────────────────────────────────────────────────────
