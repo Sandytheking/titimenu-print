@@ -21,6 +21,45 @@ function sendUpdateStatus(status, details = null) {
   }
 }
 
+function handleQuitAndInstall() {
+  console.log('[updater] quit-and-install requested')
+  
+  // En macOS, quitAndInstall falla silenciosamente si la app no está firmada.
+  // Usamos un timeout: si la app sigue ejecutándose después de 2 segundos,
+  // mostramos un diálogo explicativo de macOS Code Signing.
+  const timeoutId = setTimeout(() => {
+    if (process.platform === 'darwin') {
+      dialog.showMessageBox({
+        type: 'info',
+        title: 'Actualización en macOS',
+        message: 'La actualización automática no pudo completarse',
+        detail: 'Apple exige obligatoriamente que las aplicaciones de macOS estén firmadas digitalmente con un certificado de desarrollador oficial para poder auto-actualizarse.\n\nAl ser una compilación local/no firmada, el sistema de seguridad de macOS bloquea el reemplazo automático de los archivos.\n\nPor favor, descarga e instala la versión v1.0.7 manualmente usando el archivo DMG desde el repositorio de GitHub.',
+        buttons: ['Entendido', 'Abrir descargas en GitHub']
+      }).then(({ response }) => {
+        if (response === 1) {
+          const { shell } = require('electron')
+          shell.openExternal('https://github.com/Sandytheking/titimenu-print/releases')
+        }
+      })
+    } else {
+      dialog.showMessageBox({
+        type: 'error',
+        title: 'Error de Actualización',
+        message: 'No se pudo reiniciar la aplicación para aplicar la actualización.',
+        detail: 'Por favor, cierra la aplicación manualmente y vuelve a abrirla, o instala la nueva versión manualmente.'
+      })
+    }
+  }, 2000)
+
+  try {
+    autoUpdater.quitAndInstall()
+  } catch (err) {
+    clearTimeout(timeoutId)
+    sendLog(`Error en quitAndInstall: ${err.message}`)
+  }
+}
+
+
 // ─── Auto-updater ─────────────────────────────────────────────────────────────
 
 autoUpdater.autoDownload = true
@@ -122,7 +161,7 @@ function updateTray() {
         { type: 'separator' },
         {
           label: '⬆️ Instalar actualización',
-          click: () => autoUpdater.quitAndInstall()
+          click: () => handleQuitAndInstall()
         }
       ]
     : [
@@ -525,7 +564,7 @@ ipcMain.handle('check-for-updates', async () => {
 
 ipcMain.on('quit-and-install', () => {
   console.log('[updater] quit-and-install called')
-  autoUpdater.quitAndInstall()
+  handleQuitAndInstall()
 })
 
 // ─── App Lifecycle ────────────────────────────────────────────────────────────
