@@ -10,7 +10,15 @@ const store = new Store()
 const { BrowserWindow } = require('electron')
 
 const TEST_MODE = false
-const TEST_OUTPUT_FILE = '/tmp/titimenu-print-test.txt'
+const os = require('os')
+const TEST_FILE = process.platform === 'win32'
+  ? path.join(os.tmpdir(), 'titimenu-print-test.txt')
+  : '/tmp/titimenu-print-test.txt'
+
+const TEST_FILE_HTML = process.platform === 'win32'
+  ? path.join(os.tmpdir(), 'titimenu-print-test.html')
+  : '/tmp/titimenu-print-test.html'
+
 const TEST_PRINTER_NAME = 'TEST_MODE'
 
 // ─── Test mode: write text to file and show notification ─────────────────────
@@ -21,7 +29,7 @@ function writeTestOutput(lines) {
   const content = timestamp + '\n' + lines.join('\n') + '\n'
 
   // Append so multiple orders accumulate in the file
-  fs.appendFileSync(TEST_OUTPUT_FILE, separator + content)
+  fs.appendFileSync(TEST_FILE, separator + content)
 }
 
 function isTestMode(printerName) {
@@ -102,12 +110,14 @@ const IP_RE = /^(\d{1,3}\.){3}\d{1,3}$/
 async function createPrinter(printerName) {
   let interfaceStr
 
+  console.log('[printer] Using printer:', printerName, 'platform:', process.platform)
+
   if (IP_RE.test(printerName.trim())) {
     interfaceStr = `tcp://${printerName.trim()}:9100`
   } else if (process.platform === 'win32') {
-    interfaceStr = `\\\\.\\${printerName}`
+    interfaceStr = printerName.trim() // Windows: solo el nombre directo de la impresora
   } else {
-    interfaceStr = `printer:${printerName}`
+    interfaceStr = `printer:${printerName.trim()}` // Mac/Linux
   }
 
   return new ThermalPrinter({
@@ -211,7 +221,7 @@ async function printHTML(htmlContent, printerName) {
   if (isTestMode(printerName)) {
     const separator = '\n' + '='.repeat(40) + '\n'
     const timestamp = `[${new Date().toLocaleString('es-DO')}] [MODO SISTEMA HTML]`
-    fs.appendFileSync('/tmp/titimenu-print-test.html', separator + timestamp + '\n' + htmlContent + '\n')
+    fs.appendFileSync(TEST_FILE_HTML, separator + timestamp + '\n' + htmlContent + '\n')
     
     const cleanText = htmlContent
       .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')

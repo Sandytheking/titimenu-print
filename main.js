@@ -532,9 +532,13 @@ ipcMain.handle('test-print', async () => {
       }
     }
     if (hasTestMode) {
+      const os = require('os')
+      const testFilePath = process.platform === 'win32'
+        ? path.join(os.tmpdir(), 'titimenu-print-test.txt')
+        : '/tmp/titimenu-print-test.txt'
       new Notification({
         title: 'Impresión simulada',
-        body: 'Ver /tmp/titimenu-print-test.txt'
+        body: `Ver ${testFilePath}`
       }).show()
     }
     return { success: true }
