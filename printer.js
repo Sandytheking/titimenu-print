@@ -245,15 +245,32 @@ async function printHTML(htmlContent, printerName) {
     printWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(htmlContent))
 
     printWindow.webContents.on('did-finish-load', () => {
-      printWindow.webContents.print({
-        silent: true,
-        deviceName: printerName === TEST_PRINTER_NAME ? '' : printerName,
-        margins: { marginType: 'none' }
-      }, (success, failureReason) => {
-        printWindow.destroy()
-        if (success) resolve()
-        else reject(new Error(`Fallo al imprimir vía sistema: ${failureReason}`))
-      })
+      const printDelay = process.platform === 'win32' ? 2000 : 800
+      console.log(`[printer] HTML loaded. Waiting ${printDelay}ms before printing...`)
+      
+      setTimeout(() => {
+        const device = printerName === TEST_PRINTER_NAME ? '' : printerName
+        console.log(`[printer] Sending HTML to printer: ${device}`)
+        
+        printWindow.webContents.print({
+          silent: true,
+          printBackground: true,
+          deviceName: device,
+          margins: { marginType: 'custom', top: 0, bottom: 0, left: 0, right: 0 },
+          pageSize: { width: 80000, height: 297000 } // 80mm en microns
+        }, (success, errorType) => {
+          console.log('[printer] Print result:', success, errorType)
+          // NO cerrar la ventana hasta que el callback confirme que la impresión fue enviada
+          setTimeout(() => {
+            printWindow.destroy()
+            if (success) {
+              resolve()
+            } else {
+              reject(new Error(`Fallo al imprimir vía sistema: ${errorType}`))
+            }
+          }, 500)
+        })
+      }, printDelay)
     })
 
     printWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
