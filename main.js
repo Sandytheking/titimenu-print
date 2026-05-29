@@ -243,7 +243,9 @@ function onStatusChange(connected) {
   }
 }
 
-// ─── New Order Handler ────────────────────────────────────────────────────────
+function isPrinterActive(name) {
+  return name && name !== '' && name !== '— No usar —'
+}
 
 async function onNewOrder(type, order) {
   const legacyPrinter = store.get('printerName', '')
@@ -252,7 +254,7 @@ async function onNewOrder(type, order) {
   const printerBar = store.get('printerBar') || legacyPrinter || ''
   const businessName = store.get('businessName', 'Mi Negocio')
 
-  if (!printerCaja && !printerCocina && !printerBar) {
+  if (!isPrinterActive(printerCaja) && !isPrinterActive(printerCocina) && !isPrinterActive(printerBar)) {
     new Notification({
       title: 'TitiMenu Print Bridge',
       body: 'Nueva orden recibida pero no hay ninguna impresora activa configurada'
@@ -264,30 +266,32 @@ async function onNewOrder(type, order) {
   const foodItems = items.filter(item => item.product_type !== 'drink')
   const drinkItems = items.filter(item => item.product_type === 'drink')
 
+  const businessInfo = {
+    name: businessName,
+    legalName: store.get('businessLegalName', ''),
+    rnc: store.get('businessRnc', ''),
+    address: store.get('businessAddress', ''),
+    currency: store.get('businessCurrency', 'RD$')
+  }
+
   const printComandas = async () => {
     if (printerCocina === printerBar) {
-      if (printerCocina) {
-        await printTableComanda(order, printerCocina, businessName)
+      if (isPrinterActive(printerCocina)) {
+        await printTableComanda(order, printerCocina, businessInfo)
       }
     } else {
-      if (foodItems.length > 0 && printerCocina) {
-        await printKitchenComanda(foodItems, printerCocina, order)
+      if (foodItems.length > 0 && isPrinterActive(printerCocina)) {
+        await printKitchenComanda(foodItems, printerCocina, order, businessInfo)
       }
-      if (drinkItems.length > 0 && printerBar) {
-        await printBarComanda(drinkItems, printerBar, order)
+      if (drinkItems.length > 0 && isPrinterActive(printerBar)) {
+        await printBarComanda(drinkItems, printerBar, order, businessInfo)
       }
     }
   }
 
   try {
     if (type === 'pos') {
-      const businessInfo = {
-        name: businessName,
-        legalName: store.get('businessLegalName', ''),
-        rnc: store.get('businessRnc', ''),
-        address: store.get('businessAddress', '')
-      }
-      if (printerCaja) {
+      if (isPrinterActive(printerCaja)) {
         await printPOSReceipt(order, printerCaja, businessInfo)
       }
       // Also separate and print kitchen/bar comandas for POS orders!
@@ -295,8 +299,8 @@ async function onNewOrder(type, order) {
     } else if (type === 'table') {
       await printComandas()
     } else if (type === 'delivery') {
-      if (printerCaja) {
-        await printDeliveryTicket(order, printerCaja, businessName)
+      if (isPrinterActive(printerCaja)) {
+        await printDeliveryTicket(order, printerCaja, businessInfo)
       }
       // Also separate and print kitchen/bar comandas for delivery orders!
       await printComandas()
@@ -362,9 +366,9 @@ async function handleRequest(req, res) {
       const data = await parseBody(req)
       const legacyPrinter = store.get('printerName', '')
       const printerCaja = store.get('printerCaja') || legacyPrinter || ''
-      if (!printerCaja) {
+      if (!isPrinterActive(printerCaja)) {
         res.writeHead(503, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ error: 'No hay impresora de caja configurada' }))
+        res.end(JSON.stringify({ error: 'No hay impresora de caja activa configurada' }))
         return
       }
       const order = {
@@ -383,7 +387,8 @@ async function handleRequest(req, res) {
         name: data.business_name || store.get('businessName', 'Mi Negocio'),
         legalName: store.get('businessLegalName', ''),
         rnc: store.get('businessRnc', ''),
-        address: store.get('businessAddress', '')
+        address: store.get('businessAddress', ''),
+        currency: data.currency || store.get('businessCurrency', 'RD$')
       }
       await printPOSReceipt(order, printerCaja, businessInfo)
       sendLog(`HTTP: Recibo impreso — Orden #${data.order_number}`)
@@ -397,11 +402,12 @@ async function handleRequest(req, res) {
       const data = await parseBody(req)
       const legacyPrinter = store.get('printerName', '')
       const printerCaja = store.get('printerCaja') || legacyPrinter || ''
-      if (!printerCaja) {
+      if (!isPrinterActive(printerCaja)) {
         res.writeHead(503, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ error: 'No hay impresora de caja configurada' }))
+        res.end(JSON.stringify({ error: 'No hay impresora de caja activa configurada' }))
         return
       }
+      data.currency = data.currency || store.get('businessCurrency', 'RD$')
       await printFiscalReceipt(data, printerCaja)
       sendLog(`HTTP: Comprobante fiscal impreso — ${data.ncf || ''}`)
       res.writeHead(200, { 'Content-Type': 'application/json' })
@@ -414,9 +420,9 @@ async function handleRequest(req, res) {
       const legacyPrinter = store.get('printerName', '')
       const printerCocina = store.get('printerCocina') || legacyPrinter || ''
       const printerName = data.target_printer || printerCocina
-      if (!printerName) {
+      if (!isPrinterActive(printerName)) {
         res.writeHead(503, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ error: 'No hay impresora configurada para comanda' }))
+        res.end(JSON.stringify({ error: 'No hay impresora activa configurada para comanda' }))
         return
       }
       const order = {
@@ -425,7 +431,11 @@ async function handleRequest(req, res) {
         items: (data.items || []).map(i => ({ name: i.name, qty: i.qty, bar: i.product_type === 'bar' })),
         created_at: data.date
       }
-      await printTableComanda(order, printerName, store.get('businessName', 'Mi Negocio'))
+      const businessInfo = {
+        name: store.get('businessName', 'Mi Negocio'),
+        currency: store.get('businessCurrency', 'RD$')
+      }
+      await printTableComanda(order, printerName, businessInfo)
       sendLog(`HTTP: Comanda impresa — Mesa ${data.table_label}`)
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ success: true }))
@@ -501,6 +511,7 @@ ipcMain.handle('save-config', async (_event, config) => {
   store.set('businessLegalName', bizInfo.legal_name || '')
   store.set('businessRnc', bizInfo.rnc || '')
   store.set('businessAddress', bizInfo.address || '')
+  store.set('businessCurrency', bizInfo.currency || 'RD$')
 
   disconnect()
   setCallbacks({ onStatus: onStatusChange, onOrder: onNewOrder, onLogger: sendLog })

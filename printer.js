@@ -286,6 +286,7 @@ function generatePOSReceiptHTML(order, businessInfo, paperWidth) {
   const legalName = info.legalName || ''
   const rnc = info.rnc || ''
   const address = info.address || ''
+  const currency = info.currency || 'RD$'
   
   const now = new Date()
   const dateStr = now.toLocaleDateString('es-DO', { day: '2-digit', month: '2-digit', year: 'numeric' }) + ' ' + now.toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' })
@@ -314,7 +315,7 @@ function generatePOSReceiptHTML(order, businessInfo, paperWidth) {
     return `
       <tr>
         <td>${qty}x ${name}</td>
-        <td class="right">RD$${formatMoney(itemTotal)}</td>
+        <td class="right">${currency}${formatMoney(itemTotal)}</td>
       </tr>
     `
   }).join('')
@@ -324,17 +325,17 @@ function generatePOSReceiptHTML(order, businessInfo, paperWidth) {
     breakdownHtml = `
       <tr>
         <td>SUBTOTAL:</td>
-        <td class="right">RD$${formatMoney(subtotal)}</td>
+        <td class="right">${currency}${formatMoney(subtotal)}</td>
       </tr>
       ${hasDiscount ? `
       <tr>
         <td>${discountLabel}</td>
-        <td class="right">-RD$${formatMoney(discount)}</td>
+        <td class="right">-${currency}${formatMoney(discount)}</td>
       </tr>` : ''}
       ${hasTip ? `
       <tr>
         <td>${tipLabel}</td>
-        <td class="right">+RD$${formatMoney(tip)}</td>
+        <td class="right">+${currency}${formatMoney(tip)}</td>
       </tr>` : ''}
     `
   }
@@ -370,7 +371,7 @@ function generatePOSReceiptHTML(order, businessInfo, paperWidth) {
         ${breakdownHtml}
         <tr class="bold text-medium">
           <td>TOTAL:</td>
-          <td class="right">RD$${formatMoney(total)}</td>
+          <td class="right">${currency}${formatMoney(total)}</td>
         </tr>
         <tr>
           <td style="padding-top: 6px;">Pago: ${payMethod}</td>
@@ -456,7 +457,9 @@ function generateTableComandaHTML(order, businessName, paperWidth) {
   return getBaseHTML(getReceiptStyles(paperWidth), bodyContent)
 }
 
-function generateDeliveryTicketHTML(order, businessName, paperWidth) {
+function generateDeliveryTicketHTML(order, businessInfo, paperWidth) {
+  const info = typeof businessInfo === 'string' ? { name: businessInfo } : (businessInfo || {})
+  const currency = info.currency || 'RD$'
   const now = new Date()
   const dateStr = now.toLocaleDateString('es-DO', { day: '2-digit', month: '2-digit', year: 'numeric' }) + ' ' + now.toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' })
   const typeLabel = (order.order_type || 'delivery').toUpperCase()
@@ -474,7 +477,7 @@ function generateDeliveryTicketHTML(order, businessName, paperWidth) {
     return `
       <tr>
         <td>${qty}x ${name}</td>
-        <td class="right">RD$${formatMoney(itemTotal)}</td>
+        <td class="right">${currency}${formatMoney(itemTotal)}</td>
       </tr>
     `
   }).join('')
@@ -512,7 +515,7 @@ function generateDeliveryTicketHTML(order, businessName, paperWidth) {
       <tbody>
         <tr class="bold text-medium">
           <td>TOTAL:</td>
-          <td class="right">RD$${formatMoney(total)}</td>
+          <td class="right">${currency}${formatMoney(total)}</td>
         </tr>
       </tbody>
     </table>
@@ -544,6 +547,7 @@ function generateFiscalReceiptHTML(data, paperWidth) {
   const total = parseFloat(data.total || 0)
   const tip = parseFloat(data.tip_amount || 0)
   const hasTip = tip > 0
+  const currency = data.currency || 'RD$'
   const dateStr = new Date().toLocaleDateString('es-DO', { day: '2-digit', month: '2-digit', year: 'numeric' })
 
   let itemsHtml = items.map(item => {
@@ -554,7 +558,7 @@ function generateFiscalReceiptHTML(data, paperWidth) {
     return `
       <tr>
         <td>${qty}x ${name}</td>
-        <td class="right">RD$${formatMoney(itemTotal)}</td>
+        <td class="right">${currency}${formatMoney(itemTotal)}</td>
       </tr>
     `
   }).join('')
@@ -593,20 +597,20 @@ function generateFiscalReceiptHTML(data, paperWidth) {
       <tbody>
         <tr>
           <td>Base Imponible:</td>
-          <td class="right">RD$${formatMoney(subtotal)}</td>
+          <td class="right">${currency}${formatMoney(subtotal)}</td>
         </tr>
         <tr>
           <td>ITBIS (18%):</td>
-          <td class="right">+RD$${formatMoney(itbis)}</td>
+          <td class="right">+${currency}${formatMoney(itbis)}</td>
         </tr>
         ${hasTip ? `
         <tr>
           <td>Propina:</td>
-          <td class="right">+RD$${formatMoney(tip)}</td>
+          <td class="right">+${currency}${formatMoney(tip)}</td>
         </tr>` : ''}
         <tr class="bold text-medium" style="border-top: 1px solid #000;">
           <td style="padding-top: 4px;">TOTAL:</td>
-          <td class="right" style="padding-top: 4px;">RD$${formatMoney(total)}</td>
+          <td class="right" style="padding-top: 4px;">${currency}${formatMoney(total)}</td>
         </tr>
       </tbody>
     </table>
@@ -665,6 +669,7 @@ async function printPOSReceipt(order, printerName, businessInfo) {
   const legalName = info.legalName || ''
   const rnc = info.rnc || ''
   const address = info.address || ''
+  const currency = info.currency || 'RD$'
 
   const LINE = '================================'
   const DASH = '--------------------------------'
@@ -699,17 +704,17 @@ async function printPOSReceipt(order, printerName, businessInfo) {
     LINE,
     ...items.map(item => {
       const left = `${item.quantity || item.qty || 1}x ${item.name || item.product_name || ''}`
-      const right = `RD$${formatMoney((item.unit_price || item.price || 0) * (item.quantity || item.qty || 1))}`
+      const right = `${currency}${formatMoney((item.unit_price || item.price || 0) * (item.quantity || item.qty || 1))}`
       const spaces = W - left.length - right.length
       return left + ' '.repeat(Math.max(1, spaces)) + right
     }),
     DASH,
     ...(showBreakdown ? [
-      pad('SUBTOTAL:', 16) + pad(`RD$${formatMoney(subtotal)}`, 16, true),
-      ...(hasDiscount ? [pad(discountLabel, 16) + pad(`-RD$${formatMoney(discount)}`, 16, true)] : []),
-      ...(hasTip ? [pad(tipLabel, 16) + pad(`+RD$${formatMoney(tip)}`, 16, true)] : []),
+      pad('SUBTOTAL:', 16) + pad(`${currency}${formatMoney(subtotal)}`, 16, true),
+      ...(hasDiscount ? [pad(discountLabel, 16) + pad(`-${currency}${formatMoney(discount)}`, 16, true)] : []),
+      ...(hasTip ? [pad(tipLabel, 16) + pad(`+${currency}${formatMoney(tip)}`, 16, true)] : []),
     ] : []),
-    pad('TOTAL:', 16) + pad(`RD$${formatMoney(total)}`, 16, true),
+    pad('TOTAL:', 16) + pad(`${currency}${formatMoney(total)}`, 16, true),
     `Pago: ${payMethod}`,
     LINE,
     center('¡Gracias por su visita!', W),
@@ -737,17 +742,17 @@ async function printPOSReceipt(order, printerName, businessInfo) {
   printer.alignLeft()
   items.forEach(item => {
     const left = `${item.quantity || item.qty || 1}x ${item.name || item.product_name || ''}`
-    const right = `RD$${formatMoney((item.unit_price || item.price || 0) * (item.quantity || item.qty || 1))}`
+    const right = `${currency}${formatMoney((item.unit_price || item.price || 0) * (item.quantity || item.qty || 1))}`
     const spaces = W - left.length - right.length
     printer.println(left + ' '.repeat(Math.max(1, spaces)) + right)
   })
   printer.println(DASH)
   if (showBreakdown) {
-    printer.println(pad('SUBTOTAL:', 16) + pad(`RD$${formatMoney(subtotal)}`, 16, true))
-    if (hasDiscount) printer.println(pad(discountLabel, 16) + pad(`-RD$${formatMoney(discount)}`, 16, true))
-    if (hasTip) printer.println(pad(tipLabel, 16) + pad(`+RD$${formatMoney(tip)}`, 16, true))
+    printer.println(pad('SUBTOTAL:', 16) + pad(`${currency}${formatMoney(subtotal)}`, 16, true))
+    if (hasDiscount) printer.println(pad(discountLabel, 16) + pad(`-${currency}${formatMoney(discount)}`, 16, true))
+    if (hasTip) printer.println(pad(tipLabel, 16) + pad(`+${currency}${formatMoney(tip)}`, 16, true))
   }
-  printer.println(pad('TOTAL:', 16) + pad(`RD$${formatMoney(total)}`, 16, true))
+  printer.println(pad('TOTAL:', 16) + pad(`${currency}${formatMoney(total)}`, 16, true))
   printer.println(`Pago: ${payMethod}`)
   printer.println(LINE)
   printer.alignCenter()
@@ -759,12 +764,12 @@ async function printPOSReceipt(order, printerName, businessInfo) {
 
 // ─── Table Comanda ────────────────────────────────────────────────────────────
 
-async function printTableComanda(order, printerName, businessName) {
+async function printTableComanda(order, printerName, businessInfo) {
   const printMode = store.get('printMode', 'thermal')
   const paperWidth = store.get('paperWidth', '80mm')
 
   if (printMode === 'system') {
-    const html = generateTableComandaHTML(order, businessName, paperWidth)
+    const html = generateTableComandaHTML(order, businessInfo, paperWidth)
     await printHTML(html, printerName)
     return
   }
@@ -835,15 +840,18 @@ async function printTableComanda(order, printerName, businessName) {
 
 // ─── Delivery / Takeout Ticket ────────────────────────────────────────────────
 
-async function printDeliveryTicket(order, printerName, businessName) {
+async function printDeliveryTicket(order, printerName, businessInfo) {
   const printMode = store.get('printMode', 'thermal')
   const paperWidth = store.get('paperWidth', '80mm')
 
   if (printMode === 'system') {
-    const html = generateDeliveryTicketHTML(order, businessName, paperWidth)
+    const html = generateDeliveryTicketHTML(order, businessInfo, paperWidth)
     await printHTML(html, printerName)
     return
   }
+
+  const info = typeof businessInfo === 'string' ? { name: businessInfo } : (businessInfo || {})
+  const currency = info.currency || 'RD$'
 
   const LINE = '================================'
   const DASH = '--------------------------------'
@@ -867,12 +875,12 @@ async function printDeliveryTicket(order, printerName, businessName) {
       DASH,
       ...items.map(item => {
         const left = `${item.quantity || item.qty || 1}x ${item.name || item.product_name || ''}`
-        const right = `RD$${formatMoney((item.unit_price || item.price || 0) * (item.quantity || item.qty || 1))}`
+        const right = `${currency}${formatMoney((item.unit_price || item.price || 0) * (item.quantity || item.qty || 1))}`
         const spaces = W - left.length - right.length
         return left + ' '.repeat(Math.max(1, spaces)) + right
       }),
       DASH,
-      pad('TOTAL:', 16) + pad(`RD$${formatMoney(total)}`, 16, true),
+      pad('TOTAL:', 16) + pad(`${currency}${formatMoney(total)}`, 16, true),
       ...(order.delivery_address || order.address ? [DASH, `Dir: ${order.delivery_address || order.address}`] : []),
       LINE,
       '[CORTE]'
@@ -897,12 +905,12 @@ async function printDeliveryTicket(order, printerName, businessName) {
   printer.println(DASH)
   items.forEach(item => {
     const left = `${item.quantity || item.qty || 1}x ${item.name || item.product_name || ''}`
-    const right = `RD$${formatMoney((item.unit_price || item.price || 0) * (item.quantity || item.qty || 1))}`
+    const right = `${currency}${formatMoney((item.unit_price || item.price || 0) * (item.quantity || item.qty || 1))}`
     const spaces = W - left.length - right.length
     printer.println(left + ' '.repeat(Math.max(1, spaces)) + right)
   })
   printer.println(DASH)
-  printer.println(pad('TOTAL:', 16) + pad(`RD$${formatMoney(total)}`, 16, true))
+  printer.println(pad('TOTAL:', 16) + pad(`${currency}${formatMoney(total)}`, 16, true))
   if (order.delivery_address || order.address) {
     printer.println(DASH)
     printer.println(`Dir: ${order.delivery_address || order.address}`)
@@ -984,6 +992,7 @@ async function printFiscalReceipt(data, printerName) {
   const total = parseFloat(data.total || 0)
   const tip = parseFloat(data.tip_amount || 0)
   const hasTip = tip > 0
+  const currency = data.currency || 'RD$'
   const dateStr = new Date().toLocaleDateString('es-DO', { day: '2-digit', month: '2-digit', year: 'numeric' })
 
   const lines = [
@@ -1000,16 +1009,16 @@ async function printFiscalReceipt(data, printerName) {
     LINE,
     ...items.map(item => {
       const left = `${item.qty || 1}x ${item.name || ''}`
-      const right = `RD$${formatMoney(item.subtotal || (item.price * (item.qty || 1)) || 0)}`
+      const right = `${currency}${formatMoney(item.subtotal || (item.price * (item.qty || 1)) || 0)}`
       const spaces = W - left.length - right.length
       return left + ' '.repeat(Math.max(1, spaces)) + right
     }),
     DASH,
-    pad('Base imponible:', 16) + pad(`RD$${formatMoney(subtotal)}`, 16, true),
-    pad('ITBIS (18%):', 16) + pad(`+RD$${formatMoney(itbis)}`, 16, true),
-    ...(hasTip ? [pad('Propina:', 16) + pad(`+RD$${formatMoney(tip)}`, 16, true)] : []),
+    pad('Base imponible:', 16) + pad(`${currency}${formatMoney(subtotal)}`, 16, true),
+    pad('ITBIS (18%):', 16) + pad(`+${currency}${formatMoney(itbis)}`, 16, true),
+    ...(hasTip ? [pad('Propina:', 16) + pad(`+${currency}${formatMoney(tip)}`, 16, true)] : []),
     LINE,
-    pad('TOTAL:', 16) + pad(`RD$${formatMoney(total)}`, 16, true),
+    pad('TOTAL:', 16) + pad(`${currency}${formatMoney(total)}`, 16, true),
     LINE,
     ...(ncfType === 'B02' && data.client_name ? [
       `Cliente: ${data.client_name}`,
@@ -1046,16 +1055,16 @@ async function printFiscalReceipt(data, printerName) {
   printer.println(LINE)
   items.forEach(item => {
     const left = `${item.qty || 1}x ${item.name || ''}`
-    const right = `RD$${formatMoney(item.subtotal || (item.price * (item.qty || 1)) || 0)}`
+    const right = `${currency}${formatMoney(item.subtotal || (item.price * (item.qty || 1)) || 0)}`
     const spaces = W - left.length - right.length
     printer.println(left + ' '.repeat(Math.max(1, spaces)) + right)
   })
   printer.println(DASH)
-  printer.println(pad('Base imponible:', 16) + pad(`RD$${formatMoney(subtotal)}`, 16, true))
-  printer.println(pad('ITBIS (18%):', 16) + pad(`+RD$${formatMoney(itbis)}`, 16, true))
-  if (hasTip) printer.println(pad('Propina:', 16) + pad(`+RD$${formatMoney(tip)}`, 16, true))
+  printer.println(pad('Base imponible:', 16) + pad(`${currency}${formatMoney(subtotal)}`, 16, true))
+  printer.println(pad('ITBIS (18%):', 16) + pad(`+${currency}${formatMoney(itbis)}`, 16, true))
+  if (hasTip) printer.println(pad('Propina:', 16) + pad(`+${currency}${formatMoney(tip)}`, 16, true))
   printer.println(LINE)
-  printer.println(pad('TOTAL:', 16) + pad(`RD$${formatMoney(total)}`, 16, true))
+  printer.println(pad('TOTAL:', 16) + pad(`${currency}${formatMoney(total)}`, 16, true))
   printer.println(LINE)
   if (ncfType === 'B02' && data.client_name) {
     printer.println(`Cliente: ${data.client_name}`)
@@ -1069,7 +1078,7 @@ async function printFiscalReceipt(data, printerName) {
   await printer.execute()
 }
 
-async function printStationComanda(stationTitle, items, printerName, orderInfo) {
+async function printStationComanda(stationTitle, items, printerName, orderInfo, businessInfo) {
   if (!printerName || printerName === '— No usar —') return
 
   const printMode = store.get('printMode', 'thermal')
@@ -1170,12 +1179,12 @@ function generateStationComandaHTML(stationTitle, items, orderInfo, paperWidth) 
   return getBaseHTML(getReceiptStyles(paperWidth), bodyContent)
 }
 
-async function printKitchenComanda(items, printerName, orderInfo) {
-  return await printStationComanda('COMANDA COCINA', items, printerName, orderInfo)
+async function printKitchenComanda(items, printerName, orderInfo, businessInfo) {
+  return await printStationComanda('COMANDA COCINA', items, printerName, orderInfo, businessInfo)
 }
 
-async function printBarComanda(items, printerName, orderInfo) {
-  return await printStationComanda('COMANDA BAR', items, printerName, orderInfo)
+async function printBarComanda(items, printerName, orderInfo, businessInfo) {
+  return await printStationComanda('COMANDA BAR', items, printerName, orderInfo, businessInfo)
 }
 
 module.exports = {
