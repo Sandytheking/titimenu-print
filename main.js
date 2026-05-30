@@ -535,6 +535,7 @@ ipcMain.handle('get-config', () => {
 })
 
 ipcMain.handle('save-config', async (_event, config) => {
+  console.log('[printers] Guardando configuración:', JSON.stringify(config))
   store.set('businessId', config.businessId)
   store.set('businessName', config.businessName)
   store.set('printerName', config.printerName) // Keep it for legacy fallback
@@ -559,7 +560,9 @@ ipcMain.handle('save-config', async (_event, config) => {
 })
 
 ipcMain.handle('get-printers', async () => {
-  return await getUSBPrinters()
+  const printers = await getUSBPrinters()
+  console.log('[printers] Lista completa:', JSON.stringify(printers))
+  return printers
 })
 
 ipcMain.handle('test-print', async () => {

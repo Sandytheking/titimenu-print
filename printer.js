@@ -120,6 +120,7 @@ function formatTableLabel(label) {
 const IP_RE = /^(\d{1,3}\.){3}\d{1,3}$/
 
 async function createPrinter(printerName) {
+  console.log('[createPrinter] printerName recibido:', JSON.stringify(printerName))
   let interfaceStr
 
   console.log('[printer] Using printer:', printerName, 'platform:', process.platform)
