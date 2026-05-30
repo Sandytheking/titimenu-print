@@ -1,5 +1,5 @@
 const { printer: ThermalPrinter, types: PrinterTypes, BreakLine } = require('node-thermal-printer')
-const { exec } = require('child_process')
+const { exec, spawn } = require('child_process')
 const { promisify } = require('util')
 const fs = require('fs')
 const path = require('path')
@@ -121,9 +121,6 @@ const IP_RE = /^(\d{1,3}\.){3}\d{1,3}$/
 
 async function createPrinter(printerName) {
   console.log('[createPrinter] printerName recibido:', JSON.stringify(printerName))
-  let interfaceStr
-
-  console.log('[printer] Using printer:', printerName, 'platform:', process.platform)
   const printSpeed = parseInt(store.get('printSpeed', 1))
 
   const instantiate = (iface) => {
@@ -144,51 +141,39 @@ async function createPrinter(printerName) {
   }
 
   if (IP_RE.test(printerName.trim())) {
-    interfaceStr = `tcp://${printerName.trim()}:9100`
+    const interfaceStr = `tcp://${printerName.trim()}:9100`
     return instantiate(interfaceStr)
   }
 
+  // Local/USB printers: use a temporary dummy file to prevent node-thermal-printer from creating files in the working directory
+  const dummyInterface = path.join(os.tmpdir(), `titimenu_spool_${Date.now()}_${Math.random().toString(36).substr(2, 5)}.bin`)
+  return instantiate(dummyInterface)
+}
+
+async function sendRawToPrinter(buffer, printerName) {
+  console.log(`[sendRawToPrinter] Enviando ${buffer.length} bytes a la impresora: ${printerName}`)
   if (process.platform === 'win32') {
-    const candidates = [
-      printerName.trim(),
-      `\\\\.\\${printerName.trim()}`,
-      `printer:${printerName.trim()}`
-    ]
-    for (const cand of candidates) {
-      try {
-        console.log(`[printer] Testing connection on Windows with: ${cand}`)
-        const printer = instantiate(cand)
-        const connected = await printer.isPrinterConnected()
-        console.log('[printer] Connection test result for:', cand, '->', connected)
-        if (connected) {
-          return printer
-        }
-      } catch (e) {
-        console.log(`[printer] Failed connection test for: ${cand}`, e.message)
-      }
-    }
-    // Return standard direct name if all else fails so that outer check throws correctly
-    return instantiate(printerName.trim())
+    // Windows: escribir buffer a temp y mandar raw al spooler
+    const tmp = path.join(os.tmpdir(), `titimenu_${Date.now()}.bin`)
+    fs.writeFileSync(tmp, buffer)
+    // Opción confiable: copy /b al puerto compartido \\localhost\printerName
+    return new Promise((resolve, reject) => {
+      const p = spawn('cmd', ['/c', 'copy', '/b', tmp, `\\\\localhost\\${printerName}`])
+      p.on('close', code => { 
+        fs.unlink(tmp, () => {}); 
+        code === 0 ? resolve() : reject(new Error('copy raw failed ' + code)) 
+      })
+      p.on('error', reject)
+    })
   } else {
-    const candidates = [
-      printerName.trim(),
-      `printer:${printerName.trim()}`
-    ]
-    for (const cand of candidates) {
-      try {
-        console.log(`[printer] Testing connection on macOS/Linux with: ${cand}`)
-        const printer = instantiate(cand)
-        const connected = await printer.isPrinterConnected()
-        console.log('[printer] Connection test result for:', cand, '->', connected)
-        if (connected) {
-          return printer
-        }
-      } catch (e) {
-        console.log(`[printer] Failed connection test for: ${cand}`, e.message)
-      }
-    }
-    // Return standard direct name if all else fails
-    return instantiate(printerName.trim())
+    // macOS / Linux: CUPS raw via lp
+    return new Promise((resolve, reject) => {
+      const lp = spawn('lp', ['-d', printerName, '-o', 'raw'])
+      lp.on('close', code => code === 0 ? resolve() : reject(new Error('lp failed ' + code)))
+      lp.on('error', reject)
+      lp.stdin.write(buffer)
+      lp.stdin.end()
+    })
   }
 }
 
@@ -816,12 +801,14 @@ async function printPOSReceipt(order, printerName, businessInfo) {
     return
   }
 
-  const printer = await createPrinter(printerName)
-  const connected = await printer.isPrinterConnected()
-  console.log('[printer] Connected:', connected, 'Printer:', printerName)
   const isTCP = printerName && (IP_RE.test(printerName.trim()) || printerName.trim().startsWith('tcp://'))
-  if (isTCP && !connected) {
-    throw new Error(`Impresora no encontrada: ${printerName}`)
+  const printer = await createPrinter(printerName)
+  if (isTCP) {
+    const connected = await printer.isPrinterConnected()
+    console.log('[printer] Connected:', connected, 'Printer:', printerName)
+    if (!connected) {
+      throw new Error(`Impresora no encontrada: ${printerName}`)
+    }
   }
 
   printer.alignCenter()
@@ -853,7 +840,13 @@ async function printPOSReceipt(order, printerName, businessInfo) {
   printer.println('¡Gracias por su visita!')
   printer.println(LINE)
   printer.cut()
-  await printer.execute()
+  if (isTCP) {
+    await printer.execute()
+  } else {
+    const buf = printer.getBuffer()
+    await sendRawToPrinter(buf, printerName)
+    printer.clear()
+  }
 }
 
 // ─── Table Comanda ────────────────────────────────────────────────────────────
@@ -899,12 +892,14 @@ async function printTableComanda(order, printerName, businessInfo, tableInfo = {
     return
   }
 
-  const printer = await createPrinter(printerName)
-  const connected = await printer.isPrinterConnected()
-  console.log('[printer] Connected:', connected, 'Printer:', printerName)
   const isTCP = printerName && (IP_RE.test(printerName.trim()) || printerName.trim().startsWith('tcp://'))
-  if (isTCP && !connected) {
-    throw new Error(`Impresora no encontrada: ${printerName}`)
+  const printer = await createPrinter(printerName)
+  if (isTCP) {
+    const connected = await printer.isPrinterConnected()
+    console.log('[printer] Connected:', connected, 'Printer:', printerName)
+    if (!connected) {
+      throw new Error(`Impresora no encontrada: ${printerName}`)
+    }
   }
 
   printer.alignCenter()
@@ -937,7 +932,13 @@ async function printTableComanda(order, printerName, businessInfo, tableInfo = {
   printer.println(center(`Orden #${shortId}`))
   printer.println(LINE)
   printer.cut()
-  await printer.execute()
+  if (isTCP) {
+    await printer.execute()
+  } else {
+    const buf = printer.getBuffer()
+    await sendRawToPrinter(buf, printerName)
+    printer.clear()
+  }
 }
 
 // ─── Delivery / Takeout Ticket ────────────────────────────────────────────────
@@ -1001,12 +1002,14 @@ async function printDeliveryTicket(order, printerName, businessInfo) {
     return
   }
 
-  const printer = await createPrinter(printerName)
-  const connected = await printer.isPrinterConnected()
-  console.log('[printer] Connected:', connected, 'Printer:', printerName)
   const isTCP = printerName && (IP_RE.test(printerName.trim()) || printerName.trim().startsWith('tcp://'))
-  if (isTCP && !connected) {
-    throw new Error(`Impresora no encontrada: ${printerName}`)
+  const printer = await createPrinter(printerName)
+  if (isTCP) {
+    const connected = await printer.isPrinterConnected()
+    console.log('[printer] Connected:', connected, 'Printer:', printerName)
+    if (!connected) {
+      throw new Error(`Impresora no encontrada: ${printerName}`)
+    }
   }
 
   printer.alignCenter()
@@ -1038,7 +1041,13 @@ async function printDeliveryTicket(order, printerName, businessInfo) {
   }
   printer.println(LINE)
   printer.cut()
-  await printer.execute()
+  if (isTCP) {
+    await printer.execute()
+  } else {
+    const buf = printer.getBuffer()
+    await sendRawToPrinter(buf, printerName)
+    printer.clear()
+  }
 }
 
 // ─── Test page ────────────────────────────────────────────────────────────────
@@ -1069,12 +1078,14 @@ async function printTestPage(printerName, businessName) {
     return
   }
 
-  const printer = await createPrinter(printerName)
-  const connected = await printer.isPrinterConnected()
-  console.log('[printer] Connected:', connected, 'Printer:', printerName)
   const isTCP = printerName && (IP_RE.test(printerName.trim()) || printerName.trim().startsWith('tcp://'))
-  if (isTCP && !connected) {
-    throw new Error(`Impresora no encontrada: ${printerName}`)
+  const printer = await createPrinter(printerName)
+  if (isTCP) {
+    const connected = await printer.isPrinterConnected()
+    console.log('[printer] Connected:', connected, 'Printer:', printerName)
+    if (!connected) {
+      throw new Error(`Impresora no encontrada: ${printerName}`)
+    }
   }
   printer.alignCenter()
   printer.println('================================')
@@ -1087,7 +1098,13 @@ async function printTestPage(printerName, businessName) {
   printer.println(new Date().toLocaleString('es-DO'))
   printer.println('================================')
   printer.cut()
-  await printer.execute()
+  if (isTCP) {
+    await printer.execute()
+  } else {
+    const buf = printer.getBuffer()
+    await sendRawToPrinter(buf, printerName)
+    printer.clear()
+  }
 }
 
 // ─── Fiscal Receipt ──────────────────────────────────────────────────────────
@@ -1165,12 +1182,14 @@ async function printFiscalReceipt(data, printerName) {
     return
   }
 
-  const printer = await createPrinter(printerName)
-  const connected = await printer.isPrinterConnected()
-  console.log('[printer] Connected:', connected, 'Printer:', printerName)
   const isTCP = printerName && (IP_RE.test(printerName.trim()) || printerName.trim().startsWith('tcp://'))
-  if (isTCP && !connected) {
-    throw new Error(`Impresora no encontrada: ${printerName}`)
+  const printer = await createPrinter(printerName)
+  if (isTCP) {
+    const connected = await printer.isPrinterConnected()
+    console.log('[printer] Connected:', connected, 'Printer:', printerName)
+    if (!connected) {
+      throw new Error(`Impresora no encontrada: ${printerName}`)
+    }
   }
 
   printer.alignCenter()
@@ -1210,7 +1229,13 @@ async function printFiscalReceipt(data, printerName) {
   printer.println('¡Gracias por su visita!')
   printer.println(LINE)
   printer.cut()
-  await printer.execute()
+  if (isTCP) {
+    await printer.execute()
+  } else {
+    const buf = printer.getBuffer()
+    await sendRawToPrinter(buf, printerName)
+    printer.clear()
+  }
 }
 
 async function printStationComanda(stationTitle, items, printerName, orderInfo, businessInfo, tableInfo = {}) {
@@ -1251,12 +1276,14 @@ async function printStationComanda(stationTitle, items, printerName, orderInfo, 
     return
   }
 
-  const printer = await createPrinter(printerName)
-  const connected = await printer.isPrinterConnected()
-  console.log('[printer] Connected:', connected, 'Printer:', printerName)
   const isTCP = printerName && (IP_RE.test(printerName.trim()) || printerName.trim().startsWith('tcp://'))
-  if (isTCP && !connected) {
-    throw new Error(`Impresora no encontrada: ${printerName}`)
+  const printer = await createPrinter(printerName)
+  if (isTCP) {
+    const connected = await printer.isPrinterConnected()
+    console.log('[printer] Connected:', connected, 'Printer:', printerName)
+    if (!connected) {
+      throw new Error(`Impresora no encontrada: ${printerName}`)
+    }
   }
 
   printer.alignCenter()
@@ -1278,7 +1305,13 @@ async function printStationComanda(stationTitle, items, printerName, orderInfo, 
   printer.println(center(`Orden #${shortId}`))
   printer.println(LINE)
   printer.cut()
-  await printer.execute()
+  if (isTCP) {
+    await printer.execute()
+  } else {
+    const buf = printer.getBuffer()
+    await sendRawToPrinter(buf, printerName)
+    printer.clear()
+  }
 }
 
 function generateStationComandaHTML(stationTitle, items, orderInfo, paperWidth, tableInfo = {}) {
