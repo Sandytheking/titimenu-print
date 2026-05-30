@@ -123,33 +123,55 @@ async function createPrinter(printerName) {
   let interfaceStr
 
   console.log('[printer] Using printer:', printerName, 'platform:', process.platform)
+  const printSpeed = parseInt(store.get('printSpeed', 1))
+
+  const instantiate = (iface) => {
+    const p = new ThermalPrinter({
+      type: PrinterTypes.EPSON,
+      interface: iface,
+      characterSet: 'PC858_EURO',
+      removeSpecialCharacters: true,
+      lineCharacter: '-',
+      breakLine: BreakLine.WORD,
+      options: { timeout: 5000 }
+    })
+    if (printSpeed > 1) {
+      console.log('[printer] Setting print speed:', printSpeed)
+      p.raw(Buffer.from([0x1D, 0x73, printSpeed]))
+    }
+    return p
+  }
 
   if (IP_RE.test(printerName.trim())) {
     interfaceStr = `tcp://${printerName.trim()}:9100`
-  } else if (process.platform === 'win32') {
-    interfaceStr = printerName.trim() // Windows: solo el nombre directo de la impresora
+    return instantiate(interfaceStr)
+  }
+
+  if (process.platform === 'win32') {
+    const candidates = [
+      printerName.trim(),
+      `\\\\.\\${printerName.trim()}`,
+      `printer:${printerName.trim()}`
+    ]
+    for (const cand of candidates) {
+      try {
+        console.log(`[printer] Testing connection on Windows with: ${cand}`)
+        const printer = instantiate(cand)
+        const connected = await printer.isPrinterConnected()
+        console.log('[printer] Connection test result for:', cand, '->', connected)
+        if (connected) {
+          return printer
+        }
+      } catch (e) {
+        console.log(`[printer] Failed connection test for: ${cand}`, e.message)
+      }
+    }
+    // Return standard direct name if all else fails so that outer check throws correctly
+    return instantiate(printerName.trim())
   } else {
-    interfaceStr = `printer:${printerName.trim()}` // Mac/Linux
+    interfaceStr = `printer:${printerName.trim()}`
+    return instantiate(interfaceStr)
   }
-
-  const printer = new ThermalPrinter({
-    type: PrinterTypes.EPSON,
-    interface: interfaceStr,
-    characterSet: 'PC858_EURO',
-    removeSpecialCharacters: true,
-    lineCharacter: '-',
-    breakLine: BreakLine.WORD,
-    options: { timeout: 5000 }
-  })
-
-  // Command ESC/POS for speed (if supported by the printer)
-  const printSpeed = parseInt(store.get('printSpeed', 1))
-  if (printSpeed > 1) {
-    console.log('[printer] Setting print speed:', printSpeed)
-    printer.raw(Buffer.from([0x1D, 0x73, printSpeed]))
-  }
-
-  return printer
 }
 
 // ─── HTML Silent Printing Engine & Templates ──────────────────────────────────
@@ -327,6 +349,11 @@ function generatePOSReceiptHTML(order, businessInfo, paperWidth) {
   const discountLabel = discountPct ? `Descuento (${discountPct}%):` : 'Descuento:'
   const payMethod = order.payment_method || 'Efectivo'
   const posNum = order.order_number || order.id?.slice(-6) || '000'
+  const displayLabel = order.table_label 
+    ? order.table_label 
+    : order.order_number 
+      ? `Mesa ${order.order_number}` 
+      : 'POS'
 
   let itemsHtml = items.map(item => {
     const qty = item.quantity || item.qty || 1
@@ -367,7 +394,7 @@ function generatePOSReceiptHTML(order, businessInfo, paperWidth) {
       ${legalName ? `<div class="business-details">${legalName}</div>` : ''}
       ${rnc ? `<div class="business-details">RNC: ${rnc}</div>` : ''}
       ${address ? `<div class="business-details">${address}</div>` : ''}
-      <div class="tag">POS #${posNum}</div>
+      <div class="tag">** ${displayLabel} **</div>
       <div class="business-details" style="margin-top: 4px;">${dateStr}</div>
     </div>
     
@@ -716,6 +743,11 @@ async function printPOSReceipt(order, printerName, businessInfo) {
   const discountLabel = discountPct ? `Descuento (${discountPct}%):` : 'Descuento:'
   const payMethod = order.payment_method || 'Efectivo'
   const posNum = order.order_number || order.id?.slice(-6) || '000'
+  const displayLabel = order.table_label 
+    ? order.table_label 
+    : order.order_number 
+      ? `Mesa ${order.order_number}` 
+      : 'POS'
 
   const lines = [
     LINE,
@@ -723,7 +755,7 @@ async function printPOSReceipt(order, printerName, businessInfo) {
     ...(legalName ? [center(legalName, W)] : []),
     ...(rnc ? [center(`RNC: ${rnc}`, W)] : []),
     ...(address ? [center(address, W)] : []),
-    center(`POS #${posNum}`, W),
+    center(`** ${displayLabel} **`, W),
     center(dateStr, W),
     LINE,
     ...items.map(item => {
@@ -752,7 +784,11 @@ async function printPOSReceipt(order, printerName, businessInfo) {
   }
 
   const printer = await createPrinter(printerName)
-  if (!await printer.isPrinterConnected()) throw new Error('Impresora no disponible')
+  const connected = await printer.isPrinterConnected()
+  console.log('[printer] Connected:', connected, 'Printer:', printerName)
+  if (!connected) {
+    throw new Error(`Impresora no encontrada: ${printerName}`)
+  }
 
   printer.alignCenter()
   printer.println(LINE)
@@ -760,7 +796,7 @@ async function printPOSReceipt(order, printerName, businessInfo) {
   if (legalName) printer.println(center(legalName, W))
   if (rnc) printer.println(center(`RNC: ${rnc}`, W))
   if (address) printer.println(center(address, W))
-  printer.println(center(`POS #${posNum}`, W))
+  printer.println(center(`** ${displayLabel} **`, W))
   printer.println(center(dateStr, W))
   printer.println(LINE)
   printer.alignLeft()
@@ -830,7 +866,11 @@ async function printTableComanda(order, printerName, businessInfo, tableInfo = {
   }
 
   const printer = await createPrinter(printerName)
-  if (!await printer.isPrinterConnected()) throw new Error('Impresora no disponible')
+  const connected = await printer.isPrinterConnected()
+  console.log('[printer] Connected:', connected, 'Printer:', printerName)
+  if (!connected) {
+    throw new Error(`Impresora no encontrada: ${printerName}`)
+  }
 
   printer.alignCenter()
   printer.println(LINE)
@@ -920,7 +960,11 @@ async function printDeliveryTicket(order, printerName, businessInfo) {
   }
 
   const printer = await createPrinter(printerName)
-  if (!await printer.isPrinterConnected()) throw new Error('Impresora no disponible')
+  const connected = await printer.isPrinterConnected()
+  console.log('[printer] Connected:', connected, 'Printer:', printerName)
+  if (!connected) {
+    throw new Error(`Impresora no encontrada: ${printerName}`)
+  }
 
   printer.alignCenter()
   printer.println(LINE)
@@ -979,6 +1023,11 @@ async function printTestPage(printerName, businessName) {
   }
 
   const printer = await createPrinter(printerName)
+  const connected = await printer.isPrinterConnected()
+  console.log('[printer] Connected:', connected, 'Printer:', printerName)
+  if (!connected) {
+    throw new Error(`Impresora no encontrada: ${printerName}`)
+  }
   printer.alignCenter()
   printer.println('================================')
   printer.bold(true)
@@ -1069,7 +1118,11 @@ async function printFiscalReceipt(data, printerName) {
   }
 
   const printer = await createPrinter(printerName)
-  if (!await printer.isPrinterConnected()) throw new Error('Impresora no disponible')
+  const connected = await printer.isPrinterConnected()
+  console.log('[printer] Connected:', connected, 'Printer:', printerName)
+  if (!connected) {
+    throw new Error(`Impresora no encontrada: ${printerName}`)
+  }
 
   printer.alignCenter()
   printer.println(LINE)
@@ -1150,7 +1203,11 @@ async function printStationComanda(stationTitle, items, printerName, orderInfo, 
   }
 
   const printer = await createPrinter(printerName)
-  if (!await printer.isPrinterConnected()) throw new Error('Impresora no disponible')
+  const connected = await printer.isPrinterConnected()
+  console.log('[printer] Connected:', connected, 'Printer:', printerName)
+  if (!connected) {
+    throw new Error(`Impresora no encontrada: ${printerName}`)
+  }
 
   printer.alignCenter()
   printer.println(LINE)
