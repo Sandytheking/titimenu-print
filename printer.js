@@ -169,8 +169,25 @@ async function createPrinter(printerName) {
     // Return standard direct name if all else fails so that outer check throws correctly
     return instantiate(printerName.trim())
   } else {
-    interfaceStr = `printer:${printerName.trim()}`
-    return instantiate(interfaceStr)
+    const candidates = [
+      printerName.trim(),
+      `printer:${printerName.trim()}`
+    ]
+    for (const cand of candidates) {
+      try {
+        console.log(`[printer] Testing connection on macOS/Linux with: ${cand}`)
+        const printer = instantiate(cand)
+        const connected = await printer.isPrinterConnected()
+        console.log('[printer] Connection test result for:', cand, '->', connected)
+        if (connected) {
+          return printer
+        }
+      } catch (e) {
+        console.log(`[printer] Failed connection test for: ${cand}`, e.message)
+      }
+    }
+    // Return standard direct name if all else fails
+    return instantiate(printerName.trim())
   }
 }
 
