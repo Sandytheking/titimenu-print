@@ -351,9 +351,11 @@ function generatePOSReceiptHTML(order, businessInfo, paperWidth) {
   const posNum = order.order_number || order.id?.slice(-6) || '000'
   const displayLabel = order.table_label 
     ? order.table_label 
-    : order.order_number 
-      ? `Mesa ${order.order_number}` 
-      : 'POS'
+    : order.table_number 
+      ? `Mesa ${order.table_number}` 
+      : order.order_number 
+        ? `POS #${order.order_number}` 
+        : 'POS'
 
   let itemsHtml = items.map(item => {
     const qty = item.quantity || item.qty || 1
@@ -514,7 +516,9 @@ function generateDeliveryTicketHTML(order, businessInfo, paperWidth) {
   const customerName = order.customer_name || order.client_name || 'Cliente'
   const customerPhone = order.customer_phone || order.phone || order.tel || 'N/A'
   const items = order.items || order.order_items || []
-  const total = order.total || order.total_amount || 0
+  const subtotal = Number(order.subtotal || 0)
+  const deliveryFee = Number(order.delivery_fee || 0)
+  const total = subtotal + deliveryFee
   const address = order.delivery_address || order.address || ''
 
   let itemsHtml = items.map(item => {
@@ -561,6 +565,15 @@ function generateDeliveryTicketHTML(order, businessInfo, paperWidth) {
     
     <table class="totals-table">
       <tbody>
+        ${deliveryFee > 0 ? `
+        <tr>
+          <td>Subtotal:</td>
+          <td class="right">${currency}${formatMoney(subtotal)}</td>
+        </tr>
+        <tr>
+          <td>🛵 Envío:</td>
+          <td class="right">${currency}${formatMoney(deliveryFee)}</td>
+        </tr>` : ''}
         <tr class="bold text-medium">
           <td>TOTAL:</td>
           <td class="right">${currency}${formatMoney(total)}</td>
@@ -745,9 +758,11 @@ async function printPOSReceipt(order, printerName, businessInfo) {
   const posNum = order.order_number || order.id?.slice(-6) || '000'
   const displayLabel = order.table_label 
     ? order.table_label 
-    : order.order_number 
-      ? `Mesa ${order.order_number}` 
-      : 'POS'
+    : order.table_number 
+      ? `Mesa ${order.table_number}` 
+      : order.order_number 
+        ? `POS #${order.order_number}` 
+        : 'POS'
 
   const lines = [
     LINE,
@@ -786,7 +801,8 @@ async function printPOSReceipt(order, printerName, businessInfo) {
   const printer = await createPrinter(printerName)
   const connected = await printer.isPrinterConnected()
   console.log('[printer] Connected:', connected, 'Printer:', printerName)
-  if (!connected) {
+  const isTCP = printerName && (IP_RE.test(printerName.trim()) || printerName.trim().startsWith('tcp://'))
+  if (isTCP && !connected) {
     throw new Error(`Impresora no encontrada: ${printerName}`)
   }
 
@@ -868,7 +884,8 @@ async function printTableComanda(order, printerName, businessInfo, tableInfo = {
   const printer = await createPrinter(printerName)
   const connected = await printer.isPrinterConnected()
   console.log('[printer] Connected:', connected, 'Printer:', printerName)
-  if (!connected) {
+  const isTCP = printerName && (IP_RE.test(printerName.trim()) || printerName.trim().startsWith('tcp://'))
+  if (isTCP && !connected) {
     throw new Error(`Impresora no encontrada: ${printerName}`)
   }
 
@@ -932,7 +949,10 @@ async function printDeliveryTicket(order, printerName, businessInfo) {
   const customerName = order.customer_name || order.client_name || 'Cliente'
   const customerPhone = order.customer_phone || order.phone || order.tel || 'N/A'
   const items = order.items || order.order_items || []
-  const total = order.total || order.total_amount || 0
+  
+  const subtotal = Number(order.subtotal || 0)
+  const deliveryFee = Number(order.delivery_fee || 0)
+  const total = subtotal + deliveryFee
 
   if (isTestMode(printerName)) {
     const lines = [
@@ -950,6 +970,10 @@ async function printDeliveryTicket(order, printerName, businessInfo) {
         return left + ' '.repeat(Math.max(1, spaces)) + right
       }),
       DASH,
+      ...(deliveryFee > 0 ? [
+        pad('Subtotal:', 16) + pad(`${currency}${formatMoney(subtotal)}`, 16, true),
+        pad('Envio:', 16) + pad(`${currency}${formatMoney(deliveryFee)}`, 16, true),
+      ] : []),
       pad('TOTAL:', 16) + pad(`${currency}${formatMoney(total)}`, 16, true),
       ...(order.delivery_address || order.address ? [DASH, `Dir: ${order.delivery_address || order.address}`] : []),
       LINE,
@@ -962,7 +986,8 @@ async function printDeliveryTicket(order, printerName, businessInfo) {
   const printer = await createPrinter(printerName)
   const connected = await printer.isPrinterConnected()
   console.log('[printer] Connected:', connected, 'Printer:', printerName)
-  if (!connected) {
+  const isTCP = printerName && (IP_RE.test(printerName.trim()) || printerName.trim().startsWith('tcp://'))
+  if (isTCP && !connected) {
     throw new Error(`Impresora no encontrada: ${printerName}`)
   }
 
@@ -984,6 +1009,10 @@ async function printDeliveryTicket(order, printerName, businessInfo) {
     printer.println(left + ' '.repeat(Math.max(1, spaces)) + right)
   })
   printer.println(DASH)
+  if (deliveryFee > 0) {
+    printer.println(pad('Subtotal:', 16) + pad(`${currency}${formatMoney(subtotal)}`, 16, true))
+    printer.println(pad('Envio:', 16) + pad(`${currency}${formatMoney(deliveryFee)}`, 16, true))
+  }
   printer.println(pad('TOTAL:', 16) + pad(`${currency}${formatMoney(total)}`, 16, true))
   if (order.delivery_address || order.address) {
     printer.println(DASH)
@@ -1025,7 +1054,8 @@ async function printTestPage(printerName, businessName) {
   const printer = await createPrinter(printerName)
   const connected = await printer.isPrinterConnected()
   console.log('[printer] Connected:', connected, 'Printer:', printerName)
-  if (!connected) {
+  const isTCP = printerName && (IP_RE.test(printerName.trim()) || printerName.trim().startsWith('tcp://'))
+  if (isTCP && !connected) {
     throw new Error(`Impresora no encontrada: ${printerName}`)
   }
   printer.alignCenter()
@@ -1120,7 +1150,8 @@ async function printFiscalReceipt(data, printerName) {
   const printer = await createPrinter(printerName)
   const connected = await printer.isPrinterConnected()
   console.log('[printer] Connected:', connected, 'Printer:', printerName)
-  if (!connected) {
+  const isTCP = printerName && (IP_RE.test(printerName.trim()) || printerName.trim().startsWith('tcp://'))
+  if (isTCP && !connected) {
     throw new Error(`Impresora no encontrada: ${printerName}`)
   }
 
@@ -1205,7 +1236,8 @@ async function printStationComanda(stationTitle, items, printerName, orderInfo, 
   const printer = await createPrinter(printerName)
   const connected = await printer.isPrinterConnected()
   console.log('[printer] Connected:', connected, 'Printer:', printerName)
-  if (!connected) {
+  const isTCP = printerName && (IP_RE.test(printerName.trim()) || printerName.trim().startsWith('tcp://'))
+  if (isTCP && !connected) {
     throw new Error(`Impresora no encontrada: ${printerName}`)
   }
 

@@ -288,7 +288,15 @@ async function onNewOrder(type, order) {
   const printComandas = async () => {
     const tableInfo = {
       table_number: order.table_number,
-      table_label: order.table_label ?? (order.table_number ? `Mesa ${order.table_number}` : ''),
+      table_label: order.table_label ?? (
+        order.table_number 
+          ? `Mesa ${order.table_number}` 
+          : order.order_type === 'delivery'
+            ? `Delivery${order.customer_name ? ' - ' + order.customer_name : ''}`
+            : order.order_type === 'takeout'
+              ? `Takeout${order.customer_name ? ' - ' + order.customer_name : ''}`
+              : ''
+      ),
       order_id: order.id
     }
 
@@ -390,6 +398,9 @@ async function handleRequest(req, res) {
       }
       const order = {
         order_number: data.order_number,
+        table_label: data.table_label || null,
+        table_number: data.table_number || null,
+        delivery_fee: data.delivery_fee || null,
         items: (data.items || []).map(i => ({ name: i.name, qty: i.qty, price: i.price, subtotal: i.subtotal })),
         subtotal: data.subtotal,
         total: data.total,
