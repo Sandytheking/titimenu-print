@@ -177,7 +177,7 @@ async function fetchBusinessInfo(businessId) {
     const client = getClient()
     const { data } = await client
       .from('businesses')
-      .select('rnc, legal_name, address, currency')
+      .select('id, name, currency, rnc, legal_name, address')
       .eq('id', businessId)
       .single()
     return data || {}

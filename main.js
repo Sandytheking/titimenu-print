@@ -244,14 +244,24 @@ function onStatusChange(connected) {
 }
 
 function isPrinterActive(name) {
-  return name && name !== '' && name !== '— No usar —'
+  if (!name) return false
+  if (name === '') return false
+  if (name === '— No usar —') return false
+  if (name === '-- No usar --') return false
+  if (name === 'No usar') return false
+  if (name.trim() === '') return false
+  return true
 }
 
 async function onNewOrder(type, order) {
+  console.log('[printer] printerCaja:', JSON.stringify(store.get('printerCaja')))
+  console.log('[printer] printerCocina:', JSON.stringify(store.get('printerCocina')))
+  console.log('[printer] printerBar:', JSON.stringify(store.get('printerBar')))
+
   const legacyPrinter = store.get('printerName', '')
-  const printerCaja = store.get('printerCaja') || legacyPrinter || ''
-  const printerCocina = store.get('printerCocina') || legacyPrinter || ''
-  const printerBar = store.get('printerBar') || legacyPrinter || ''
+  const printerCaja = store.has('printerCaja') ? store.get('printerCaja') : legacyPrinter
+  const printerCocina = store.has('printerCocina') ? store.get('printerCocina') : legacyPrinter
+  const printerBar = store.has('printerBar') ? store.get('printerBar') : legacyPrinter
   const businessName = store.get('businessName', 'Mi Negocio')
 
   if (!isPrinterActive(printerCaja) && !isPrinterActive(printerCocina) && !isPrinterActive(printerBar)) {
@@ -273,18 +283,25 @@ async function onNewOrder(type, order) {
     address: store.get('businessAddress', ''),
     currency: store.get('businessCurrency', 'RD$')
   }
+  console.log('[business] currency:', businessInfo.currency)
 
   const printComandas = async () => {
+    const tableInfo = {
+      table_number: order.table_number,
+      table_label: order.table_label ?? (order.table_number ? `Mesa ${order.table_number}` : ''),
+      order_id: order.id
+    }
+
     if (printerCocina === printerBar) {
       if (isPrinterActive(printerCocina)) {
-        await printTableComanda(order, printerCocina, businessInfo)
+        await printTableComanda(order, printerCocina, businessInfo, tableInfo)
       }
     } else {
       if (foodItems.length > 0 && isPrinterActive(printerCocina)) {
-        await printKitchenComanda(foodItems, printerCocina, order, businessInfo)
+        await printKitchenComanda(foodItems, printerCocina, order, businessInfo, tableInfo)
       }
       if (drinkItems.length > 0 && isPrinterActive(printerBar)) {
-        await printBarComanda(drinkItems, printerBar, order, businessInfo)
+        await printBarComanda(drinkItems, printerBar, order, businessInfo, tableInfo)
       }
     }
   }
@@ -365,7 +382,7 @@ async function handleRequest(req, res) {
       console.log('[HTTP] POST /print-receipt recibido')
       const data = await parseBody(req)
       const legacyPrinter = store.get('printerName', '')
-      const printerCaja = store.get('printerCaja') || legacyPrinter || ''
+      const printerCaja = store.has('printerCaja') ? store.get('printerCaja') : legacyPrinter
       if (!isPrinterActive(printerCaja)) {
         res.writeHead(503, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: 'No hay impresora de caja activa configurada' }))
@@ -390,6 +407,7 @@ async function handleRequest(req, res) {
         address: store.get('businessAddress', ''),
         currency: data.currency || store.get('businessCurrency', 'RD$')
       }
+      console.log('[business] currency:', businessInfo.currency)
       await printPOSReceipt(order, printerCaja, businessInfo)
       sendLog(`HTTP: Recibo impreso — Orden #${data.order_number}`)
       res.writeHead(200, { 'Content-Type': 'application/json' })
@@ -401,13 +419,14 @@ async function handleRequest(req, res) {
       console.log('[HTTP] POST /print-fiscal recibido')
       const data = await parseBody(req)
       const legacyPrinter = store.get('printerName', '')
-      const printerCaja = store.get('printerCaja') || legacyPrinter || ''
+      const printerCaja = store.has('printerCaja') ? store.get('printerCaja') : legacyPrinter
       if (!isPrinterActive(printerCaja)) {
         res.writeHead(503, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: 'No hay impresora de caja activa configurada' }))
         return
       }
       data.currency = data.currency || store.get('businessCurrency', 'RD$')
+      console.log('[business] currency:', data.currency)
       await printFiscalReceipt(data, printerCaja)
       sendLog(`HTTP: Comprobante fiscal impreso — ${data.ncf || ''}`)
       res.writeHead(200, { 'Content-Type': 'application/json' })
@@ -418,7 +437,7 @@ async function handleRequest(req, res) {
     if (req.method === 'POST' && urlPath === '/print-comanda') {
       const data = await parseBody(req)
       const legacyPrinter = store.get('printerName', '')
-      const printerCocina = store.get('printerCocina') || legacyPrinter || ''
+      const printerCocina = store.has('printerCocina') ? store.get('printerCocina') : legacyPrinter
       const printerName = data.target_printer || printerCocina
       if (!isPrinterActive(printerName)) {
         res.writeHead(503, { 'Content-Type': 'application/json' })
@@ -435,7 +454,13 @@ async function handleRequest(req, res) {
         name: store.get('businessName', 'Mi Negocio'),
         currency: store.get('businessCurrency', 'RD$')
       }
-      await printTableComanda(order, printerName, businessInfo)
+      console.log('[business] currency:', businessInfo.currency)
+      const tableInfo = {
+        table_number: data.table_number || '',
+        table_label: data.table_label || (data.table_number ? `Mesa ${data.table_number}` : ''),
+        order_id: String(data.order_number || '')
+      }
+      await printTableComanda(order, printerName, businessInfo, tableInfo)
       sendLog(`HTTP: Comanda impresa — Mesa ${data.table_label}`)
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ success: true }))
@@ -487,11 +512,12 @@ ipcMain.handle('get-config', () => {
     businessId: store.get('businessId', ''),
     businessName: store.get('businessName', ''),
     printerName: legacyPrinter,
-    printerCaja: store.get('printerCaja', legacyPrinter),
-    printerCocina: store.get('printerCocina', legacyPrinter),
-    printerBar: store.get('printerBar', legacyPrinter),
+    printerCaja: store.has('printerCaja') ? store.get('printerCaja') : legacyPrinter,
+    printerCocina: store.has('printerCocina') ? store.get('printerCocina') : legacyPrinter,
+    printerBar: store.has('printerBar') ? store.get('printerBar') : legacyPrinter,
     printMode: store.get('printMode', 'thermal'),
     paperWidth: store.get('paperWidth', '80mm'),
+    printSpeed: store.get('printSpeed', 1),
     httpPort: activePort || store.get('httpPort', null),
     version: app.getVersion()
   }
@@ -506,6 +532,7 @@ ipcMain.handle('save-config', async (_event, config) => {
   store.set('printerBar', config.printerBar || '')
   store.set('printMode', config.printMode || 'thermal')
   store.set('paperWidth', config.paperWidth || '80mm')
+  store.set('printSpeed', parseInt(config.printSpeed) || 1)
 
   const bizInfo = await fetchBusinessInfo(config.businessId)
   store.set('businessLegalName', bizInfo.legal_name || '')
@@ -526,9 +553,9 @@ ipcMain.handle('get-printers', async () => {
 
 ipcMain.handle('test-print', async () => {
   const legacyPrinter = store.get('printerName', '')
-  const printerCaja = store.get('printerCaja') || legacyPrinter || ''
-  const printerCocina = store.get('printerCocina') || legacyPrinter || ''
-  const printerBar = store.get('printerBar') || legacyPrinter || ''
+  const printerCaja = store.has('printerCaja') ? store.get('printerCaja') : legacyPrinter
+  const printerCocina = store.has('printerCocina') ? store.get('printerCocina') : legacyPrinter
+  const printerBar = store.has('printerBar') ? store.get('printerBar') : legacyPrinter
   const businessName = store.get('businessName', 'Mi Negocio')
 
   const activePrinters = [...new Set([printerCaja, printerCocina, printerBar].filter(Boolean))]

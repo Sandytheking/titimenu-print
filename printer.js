@@ -103,6 +103,18 @@ function formatMoney(amount) {
   return parseFloat(amount || 0).toFixed(2)
 }
 
+function formatTableLabel(label) {
+  if (!label) return '?'
+  label = String(label).trim()
+  if (/^mesa\s+/i.test(label)) {
+    return label.toUpperCase()
+  }
+  if (/^\d+$/.test(label)) {
+    return `MESA ${label}`
+  }
+  return label.toUpperCase()
+}
+
 // ─── Real printer factory ─────────────────────────────────────────────────────
 
 const IP_RE = /^(\d{1,3}\.){3}\d{1,3}$/
@@ -120,7 +132,7 @@ async function createPrinter(printerName) {
     interfaceStr = `printer:${printerName.trim()}` // Mac/Linux
   }
 
-  return new ThermalPrinter({
+  const printer = new ThermalPrinter({
     type: PrinterTypes.EPSON,
     interface: interfaceStr,
     characterSet: 'PC858_EURO',
@@ -129,6 +141,15 @@ async function createPrinter(printerName) {
     breakLine: BreakLine.WORD,
     options: { timeout: 5000 }
   })
+
+  // Command ESC/POS for speed (if supported by the printer)
+  const printSpeed = parseInt(store.get('printSpeed', 1))
+  if (printSpeed > 1) {
+    console.log('[printer] Setting print speed:', printSpeed)
+    printer.raw(Buffer.from([0x1D, 0x73, printSpeed]))
+  }
+
+  return printer
 }
 
 // ─── HTML Silent Printing Engine & Templates ──────────────────────────────────
@@ -286,7 +307,7 @@ function generatePOSReceiptHTML(order, businessInfo, paperWidth) {
   const legalName = info.legalName || ''
   const rnc = info.rnc || ''
   const address = info.address || ''
-  const currency = info.currency || 'RD$'
+  const currency = info.currency || store.get('businessCurrency', 'RD$')
   
   const now = new Date()
   const dateStr = now.toLocaleDateString('es-DO', { day: '2-digit', month: '2-digit', year: 'numeric' }) + ' ' + now.toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' })
@@ -390,11 +411,11 @@ function generatePOSReceiptHTML(order, businessInfo, paperWidth) {
   return getBaseHTML(getReceiptStyles(paperWidth), bodyContent)
 }
 
-function generateTableComandaHTML(order, businessName, paperWidth) {
+function generateTableComandaHTML(order, businessName, paperWidth, tableInfo = {}) {
   const now = new Date()
   const dateStr = now.toLocaleDateString('es-DO', { day: '2-digit', month: '2-digit', year: 'numeric' }) + ' ' + now.toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' })
-  const tableLabel = order.table_label || order.table_number || order.table_id || '?'
-  const shortId = (order.id || '000000').slice(-6).toUpperCase()
+  const tableLabel = tableInfo?.table_label || order.table_label || tableInfo?.table_number || order.table_number || order.table_id || '?'
+  const shortId = (tableInfo?.order_id || order.id || '000000').slice(-6).toUpperCase()
   const items = order.items || order.order_items || []
   const kitchenItems = items.filter(i => !i.bar && i.category !== 'bar' && i.station !== 'bar')
   const barItems = items.filter(i => i.bar || i.category === 'bar' || i.station === 'bar')
@@ -437,7 +458,7 @@ function generateTableComandaHTML(order, businessName, paperWidth) {
   const bodyContent = `
     <div class="header center">
       <div class="text-large">** COMANDA **</div>
-      <div class="tag" style="font-size: 1.15em;">MESA ${tableLabel}</div>
+      <div class="tag" style="font-size: 1.15em;">${formatTableLabel(tableLabel)}</div>
       <div class="business-details" style="margin-top: 4px;">${dateStr}</div>
     </div>
     
@@ -459,7 +480,7 @@ function generateTableComandaHTML(order, businessName, paperWidth) {
 
 function generateDeliveryTicketHTML(order, businessInfo, paperWidth) {
   const info = typeof businessInfo === 'string' ? { name: businessInfo } : (businessInfo || {})
-  const currency = info.currency || 'RD$'
+  const currency = info.currency || store.get('businessCurrency', 'RD$')
   const now = new Date()
   const dateStr = now.toLocaleDateString('es-DO', { day: '2-digit', month: '2-digit', year: 'numeric' }) + ' ' + now.toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' })
   const typeLabel = (order.order_type || 'delivery').toUpperCase()
@@ -547,7 +568,7 @@ function generateFiscalReceiptHTML(data, paperWidth) {
   const total = parseFloat(data.total || 0)
   const tip = parseFloat(data.tip_amount || 0)
   const hasTip = tip > 0
-  const currency = data.currency || 'RD$'
+  const currency = data.currency || store.get('businessCurrency', 'RD$')
   const dateStr = new Date().toLocaleDateString('es-DO', { day: '2-digit', month: '2-digit', year: 'numeric' })
 
   let itemsHtml = items.map(item => {
@@ -655,6 +676,9 @@ function generateTestReceiptHTML(businessName, paperWidth) {
 // ─── POS Receipt ──────────────────────────────────────────────────────────────
 
 async function printPOSReceipt(order, printerName, businessInfo) {
+  const cur = businessInfo?.currency || order?.currency || store.get('businessCurrency', 'RD$')
+  console.log('[printer] Using currency:', cur)
+
   const printMode = store.get('printMode', 'thermal')
   const paperWidth = store.get('paperWidth', '80mm')
 
@@ -669,7 +693,7 @@ async function printPOSReceipt(order, printerName, businessInfo) {
   const legalName = info.legalName || ''
   const rnc = info.rnc || ''
   const address = info.address || ''
-  const currency = info.currency || 'RD$'
+  const currency = cur
 
   const LINE = '================================'
   const DASH = '--------------------------------'
@@ -764,12 +788,15 @@ async function printPOSReceipt(order, printerName, businessInfo) {
 
 // ─── Table Comanda ────────────────────────────────────────────────────────────
 
-async function printTableComanda(order, printerName, businessInfo) {
+async function printTableComanda(order, printerName, businessInfo, tableInfo = {}) {
+  const currency = businessInfo?.currency || store.get('businessCurrency', 'RD$')
+  console.log('[printer] Using currency:', currency)
+
   const printMode = store.get('printMode', 'thermal')
   const paperWidth = store.get('paperWidth', '80mm')
 
   if (printMode === 'system') {
-    const html = generateTableComandaHTML(order, businessInfo, paperWidth)
+    const html = generateTableComandaHTML(order, businessInfo, paperWidth, tableInfo)
     await printHTML(html, printerName)
     return
   }
@@ -777,8 +804,8 @@ async function printTableComanda(order, printerName, businessInfo) {
   const LINE = '================================'
   const now = new Date()
   const dateStr = now.toLocaleDateString('es-DO', { day: '2-digit', month: '2-digit', year: 'numeric' }) + '  ' + now.toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' })
-  const tableLabel = order.table_label || order.table_number || order.table_id || '?'
-  const shortId = (order.id || '000000').slice(-6).toUpperCase()
+  const tableLabel = tableInfo?.table_label || order.table_label || tableInfo?.table_number || order.table_number || order.table_id || '?'
+  const shortId = (tableInfo?.order_id || order.id || '000000').slice(-6).toUpperCase()
   const items = order.items || order.order_items || []
   const kitchenItems = items.filter(i => !i.bar && i.category !== 'bar' && i.station !== 'bar')
   const barItems = items.filter(i => i.bar || i.category === 'bar' || i.station === 'bar')
@@ -787,7 +814,7 @@ async function printTableComanda(order, printerName, businessInfo) {
   if (isTestMode(printerName)) {
     const lines = [
       LINE,
-      center(`** COMANDA - MESA ${tableLabel} **`),
+      center(`** COMANDA - ${formatTableLabel(tableLabel)} **`),
       center(dateStr),
       LINE,
       ...(kitchenItems.length > 0 ? ['--- COCINA ---', ...kitchenItems.map(i => `${i.quantity || i.qty || 1}x ${i.name || i.product_name || ''}`)] : []),
@@ -808,7 +835,7 @@ async function printTableComanda(order, printerName, businessInfo) {
   printer.alignCenter()
   printer.println(LINE)
   printer.bold(true)
-  printer.println(center(`** COMANDA - MESA ${tableLabel} **`))
+  printer.println(center(`** COMANDA - ${formatTableLabel(tableLabel)} **`))
   printer.bold(false)
   printer.println(center(dateStr))
   printer.println(LINE)
@@ -841,6 +868,9 @@ async function printTableComanda(order, printerName, businessInfo) {
 // ─── Delivery / Takeout Ticket ────────────────────────────────────────────────
 
 async function printDeliveryTicket(order, printerName, businessInfo) {
+  const cur = businessInfo?.currency || order?.currency || store.get('businessCurrency', 'RD$')
+  console.log('[printer] Using currency:', cur)
+
   const printMode = store.get('printMode', 'thermal')
   const paperWidth = store.get('paperWidth', '80mm')
 
@@ -851,7 +881,7 @@ async function printDeliveryTicket(order, printerName, businessInfo) {
   }
 
   const info = typeof businessInfo === 'string' ? { name: businessInfo } : (businessInfo || {})
-  const currency = info.currency || 'RD$'
+  const currency = cur
 
   const LINE = '================================'
   const DASH = '--------------------------------'
@@ -966,6 +996,9 @@ async function printTestPage(printerName, businessName) {
 // ─── Fiscal Receipt ──────────────────────────────────────────────────────────
 
 async function printFiscalReceipt(data, printerName) {
+  const cur = data?.currency || store.get('businessCurrency', 'RD$')
+  console.log('[printer] Using currency:', cur)
+
   const printMode = store.get('printMode', 'thermal')
   const paperWidth = store.get('paperWidth', '80mm')
 
@@ -992,7 +1025,7 @@ async function printFiscalReceipt(data, printerName) {
   const total = parseFloat(data.total || 0)
   const tip = parseFloat(data.tip_amount || 0)
   const hasTip = tip > 0
-  const currency = data.currency || 'RD$'
+  const currency = cur
   const dateStr = new Date().toLocaleDateString('es-DO', { day: '2-digit', month: '2-digit', year: 'numeric' })
 
   const lines = [
@@ -1078,17 +1111,20 @@ async function printFiscalReceipt(data, printerName) {
   await printer.execute()
 }
 
-async function printStationComanda(stationTitle, items, printerName, orderInfo, businessInfo) {
+async function printStationComanda(stationTitle, items, printerName, orderInfo, businessInfo, tableInfo = {}) {
   if (!printerName || printerName === '— No usar —') return
+
+  const currency = businessInfo?.currency || store.get('businessCurrency', 'RD$')
+  console.log('[printer] Using currency:', currency)
 
   const printMode = store.get('printMode', 'thermal')
   const paperWidth = store.get('paperWidth', '80mm')
   
-  const tableLabel = orderInfo.table_label || orderInfo.table_number || orderInfo.table_id || '?'
-  const shortId = (orderInfo.id || orderInfo.order_number || '000000').slice(-6).toUpperCase()
+  const tableLabel = tableInfo?.table_label || orderInfo.table_label || tableInfo?.table_number || orderInfo.table_number || orderInfo.table_id || '?'
+  const shortId = (tableInfo?.order_id || orderInfo.id || orderInfo.order_number || '000000').slice(-6).toUpperCase()
 
   if (printMode === 'system') {
-    const html = generateStationComandaHTML(stationTitle, items, orderInfo, paperWidth)
+    const html = generateStationComandaHTML(stationTitle, items, orderInfo, paperWidth, tableInfo)
     await printHTML(html, printerName)
     return
   }
@@ -1100,7 +1136,7 @@ async function printStationComanda(stationTitle, items, printerName, orderInfo, 
   if (isTestMode(printerName)) {
     const lines = [
       LINE,
-      center(`** ${stationTitle} - MESA ${tableLabel} **`),
+      center(`** ${stationTitle} - ${formatTableLabel(tableLabel)} **`),
       center(dateStr),
       LINE,
       ...items.map(i => `${i.quantity || i.qty || 1}x ${i.name || i.product_name || ''}` + (i.notes ? `\n   * ${i.notes}` : '')),
@@ -1119,7 +1155,7 @@ async function printStationComanda(stationTitle, items, printerName, orderInfo, 
   printer.alignCenter()
   printer.println(LINE)
   printer.bold(true)
-  printer.println(center(`** ${stationTitle} - MESA ${tableLabel} **`))
+  printer.println(center(`** ${stationTitle} - ${formatTableLabel(tableLabel)} **`))
   printer.bold(false)
   printer.println(center(dateStr))
   printer.println(LINE)
@@ -1138,11 +1174,11 @@ async function printStationComanda(stationTitle, items, printerName, orderInfo, 
   await printer.execute()
 }
 
-function generateStationComandaHTML(stationTitle, items, orderInfo, paperWidth) {
+function generateStationComandaHTML(stationTitle, items, orderInfo, paperWidth, tableInfo = {}) {
   const now = new Date()
   const dateStr = now.toLocaleDateString('es-DO', { day: '2-digit', month: '2-digit', year: 'numeric' }) + ' ' + now.toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' })
-  const tableLabel = orderInfo.table_label || orderInfo.table_number || orderInfo.table_id || '?'
-  const shortId = (orderInfo.id || orderInfo.order_number || '000000').slice(-6).toUpperCase()
+  const tableLabel = tableInfo?.table_label || orderInfo.table_label || tableInfo?.table_number || orderInfo.table_number || orderInfo.table_id || '?'
+  const shortId = (tableInfo?.order_id || orderInfo.id || orderInfo.order_number || '000000').slice(-6).toUpperCase()
 
   const itemsHtml = items.map(item => {
     const qty = item.quantity || item.qty || 1
@@ -1159,7 +1195,7 @@ function generateStationComandaHTML(stationTitle, items, orderInfo, paperWidth) 
   const bodyContent = `
     <div class="header center">
       <div class="text-large">** ${stationTitle} **</div>
-      <div class="tag" style="font-size: 1.15em;">MESA ${tableLabel}</div>
+      <div class="tag" style="font-size: 1.15em;">${formatTableLabel(tableLabel)}</div>
       <div class="business-details" style="margin-top: 4px;">${dateStr}</div>
     </div>
     

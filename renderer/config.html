@@ -229,10 +229,15 @@
       gap: 6px;
     }
 
-    .row-fields {
+    .row-fields, .row-fields-3 {
       display: grid;
-      grid-template-columns: 1fr 1fr;
       gap: 12px;
+    }
+    .row-fields {
+      grid-template-columns: 1fr 1fr;
+    }
+    .row-fields-3 {
+      grid-template-columns: 1fr 1fr 1fr;
     }
 
     label {
@@ -673,8 +678,8 @@
           </div>
         </div>
 
-        <!-- Row: Print Mode & Paper Width -->
-        <div class="row-fields">
+        <!-- Row: Print Mode, Paper Width & Speed -->
+        <div class="row-fields-3">
           <div class="field">
             <label>Modo Impresión</label>
             <div class="select-wrapper">
@@ -691,6 +696,18 @@
               <select id="paperWidthSelect">
                 <option value="80mm">80mm (3 pulgadas)</option>
                 <option value="58mm">58mm (2 pulgadas)</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="field">
+            <label>⚡ Velocidad Impresión</label>
+            <div class="select-wrapper">
+              <select id="printSpeedSelect">
+                <option value="1">Lenta (100mm/s)</option>
+                <option value="2">Normal (150mm/s)</option>
+                <option value="3">Rápida (200mm/s)</option>
+                <option value="4">Máxima (300mm/s)</option>
               </select>
             </div>
           </div>
@@ -796,18 +813,21 @@
         const setSelectValue = (selectId, val) => {
           const sel = document.getElementById(selectId)
           if (!sel) return
-          sel.value = val || ''
+          sel.value = val !== undefined && val !== null ? val : ''
         }
 
-        setSelectValue('printerCajaSelect', config.printerCaja || config.printerName)
-        setSelectValue('printerCocinaSelect', config.printerCocina || config.printerName)
-        setSelectValue('printerBarSelect', config.printerBar || config.printerName)
+        setSelectValue('printerCajaSelect', config.printerCaja !== undefined && config.printerCaja !== null ? config.printerCaja : config.printerName)
+        setSelectValue('printerCocinaSelect', config.printerCocina !== undefined && config.printerCocina !== null ? config.printerCocina : config.printerName)
+        setSelectValue('printerBarSelect', config.printerBar !== undefined && config.printerBar !== null ? config.printerBar : config.printerName)
 
         if (config.printMode) {
           document.getElementById('printModeSelect').value = config.printMode
         }
         if (config.paperWidth) {
           document.getElementById('paperWidthSelect').value = config.paperWidth
+        }
+        if (config.printSpeed !== undefined && config.printSpeed !== null) {
+          document.getElementById('printSpeedSelect').value = config.printSpeed
         }
         if (config.version) {
           document.getElementById('appVersion').textContent = `v${config.version}`
@@ -889,6 +909,7 @@
       const printerBar = document.getElementById('printerBarSelect').value
       const printMode = document.getElementById('printModeSelect').value
       const paperWidth = document.getElementById('paperWidthSelect').value
+      const printSpeed = parseInt(document.getElementById('printSpeedSelect').value) || 1
 
       if (!businessId)   { showMessage('Ingresa tu Business ID', 'error'); return }
       if (!businessName) { showMessage('Ingresa el nombre del negocio', 'error'); return }
@@ -916,7 +937,8 @@
           printerCocina,
           printerBar,
           printMode,
-          paperWidth
+          paperWidth,
+          printSpeed
         })
         addLog('Configuración guardada — iniciando conexión...', 'warn')
       } catch (e) {
@@ -963,6 +985,7 @@
         document.getElementById('printerBarSelect').selectedIndex = 0
         document.getElementById('printModeSelect').value = 'thermal'
         document.getElementById('paperWidthSelect').value = '80mm'
+        document.getElementById('printSpeedSelect').value = '1'
         document.getElementById('statusDot').className = 'status-dot'
         document.getElementById('statusText').textContent = 'Desconectado'
         isSaving = false
