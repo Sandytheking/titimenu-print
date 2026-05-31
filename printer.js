@@ -153,115 +153,83 @@ async function createPrinter(printerName) {
 async function sendRawToPrinter(buffer, printerName) {
   console.log(`[sendRawToPrinter] Enviando ${buffer.length} bytes a la impresora: ${printerName}`)
   if (process.platform === 'win32') {
-    // Windows: usar PowerShell con P/Invoke para mandar raw directamente a la cola local del spooler
-    const ps1Path = path.join(os.tmpdir(), `titimenu_print_${Date.now()}.ps1`)
-    const tmp = path.join(os.tmpdir(), `titimenu_${Date.now()}.bin`)
-    fs.writeFileSync(tmp, buffer)
+    return new Promise((resolve, reject) => {
+      const tmp = path.join(os.tmpdir(), `titimenu_${Date.now()}.bin`)
+      fs.writeFileSync(tmp, buffer)
+      
+      const ps = `
+$printerName = "${printerName.replace(/"/g, '')}"
+$filePath = "${tmp.replace(/\\/g, '\\\\')}"
 
-    const ps1Code = `
-$PrinterName = $args[0]
-$FilePath = $args[1]
-
-$code = @"
+Add-Type @"
 using System;
+using System.IO;
 using System.Runtime.InteropServices;
 
-public class RawPrinterHelper {
-    [DllImport("winspool.drv", CharSet = CharSet.Ansi, SetLastError = true)]
-    public static extern bool OpenPrinter(string szPrinter, out IntPtr hPrinter, IntPtr pd);
-
-    [DllImport("winspool.drv", CharSet = CharSet.Ansi, SetLastError = true)]
-    public static extern bool StartDocPrinter(IntPtr hPrinter, int Level, [In, MarshalAs(UnmanagedType.Struct)] DOC_INFO_1 pDocInfo);
-
-    [DllImport("winspool.drv", SetLastError = true)]
-    public static extern bool StartPagePrinter(IntPtr hPrinter);
-
-    [DllImport("winspool.drv", SetLastError = true)]
-    public static extern bool WritePrinter(IntPtr hPrinter, IntPtr pBytes, int dwCount, out int dwWritten);
-
-    [DllImport("winspool.drv", SetLastError = true)]
-    public static extern bool EndPagePrinter(IntPtr hPrinter);
-
-    [DllImport("winspool.drv", SetLastError = true)]
-    public static extern bool EndDocPrinter(IntPtr hPrinter);
-
-    [DllImport("winspool.drv", SetLastError = true)]
-    public static extern bool ClosePrinter(IntPtr hPrinter);
-
+public class RawPrinter {
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
-    public class DOC_INFO_1 {
-        public string pDocName;
-        public string pOutputFile;
-        public string pDatatype;
+    public struct DOCINFOA {
+        [MarshalAs(UnmanagedType.LPStr)] public string pDocName;
+        [MarshalAs(UnmanagedType.LPStr)] public string pOutputFile;
+        [MarshalAs(UnmanagedType.LPStr)] public string pDataType;
+    }
+    [DllImport("winspool.Drv", EntryPoint="OpenPrinterA", SetLastError=true, CharSet=CharSet.Ansi)]
+    public static extern bool OpenPrinter(string src, out IntPtr hPrinter, IntPtr pd);
+    [DllImport("winspool.Drv", EntryPoint="ClosePrinter", SetLastError=true)]
+    public static extern bool ClosePrinter(IntPtr hPrinter);
+    [DllImport("winspool.Drv", EntryPoint="StartDocPrinterA", SetLastError=true, CharSet=CharSet.Ansi)]
+    public static extern bool StartDocPrinter(IntPtr hPrinter, int level, ref DOCINFOA di);
+    [DllImport("winspool.Drv", EntryPoint="EndDocPrinter", SetLastError=true)]
+    public static extern bool EndDocPrinter(IntPtr hPrinter);
+    [DllImport("winspool.Drv", EntryPoint="StartPagePrinter", SetLastError=true)]
+    public static extern bool StartPagePrinter(IntPtr hPrinter);
+    [DllImport("winspool.Drv", EntryPoint="EndPagePrinter", SetLastError=true)]
+    public static extern bool EndPagePrinter(IntPtr hPrinter);
+    [DllImport("winspool.Drv", EntryPoint="WritePrinter", SetLastError=true)]
+    public static extern bool WritePrinter(IntPtr hPrinter, byte[] pBytes, int dwCount, out int dwWritten);
+
+    public static bool SendBytesToPrinter(string printerName, byte[] bytes) {
+        IntPtr hPrinter;
+        DOCINFOA di = new DOCINFOA();
+        di.pDocName = "TitiMenu Receipt";
+        di.pDataType = "RAW";
+        if (!OpenPrinter(printerName, out hPrinter, IntPtr.Zero)) return false;
+        bool ok = false;
+        if (StartDocPrinter(hPrinter, 1, ref di)) {
+            if (StartPagePrinter(hPrinter)) {
+                int written;
+                ok = WritePrinter(hPrinter, bytes, bytes.Length, out written);
+                EndPagePrinter(hPrinter);
+            }
+            EndDocPrinter(hPrinter);
+        }
+        ClosePrinter(hPrinter);
+        return ok;
     }
 }
 "@
 
-try {
-    Add-Type -TypeDefinition $code -ErrorAction Stop
-} catch {
-    # Si ya está definido en la sesión
-}
-
-$hPrinter = [IntPtr]::Zero
-if (-not [RawPrinterHelper]::OpenPrinter($PrinterName, [ref]$hPrinter, [IntPtr]::Zero)) {
-    Write-Error "Failed to open printer '$PrinterName'."
-    exit 1
-}
-
-try {
-    $docInfo = New-Object RawPrinterHelper+DOC_INFO_1
-    $docInfo.pDocName = "TitiMenu Raw Print"
-    $docInfo.pDatatype = "RAW"
-
-    [RawPrinterHelper]::StartDocPrinter($hPrinter, 1, $docInfo)
-    [RawPrinterHelper]::StartPagePrinter($hPrinter)
-
-    $Bytes = [System.IO.File]::ReadAllBytes($FilePath)
-    $pUnmanagedBytes = [System.Runtime.InteropServices.Marshal]::AllocCoTaskMem($Bytes.Length)
-    [System.Runtime.InteropServices.Marshal]::Copy($Bytes, 0, $pUnmanagedBytes, $Bytes.Length)
-    
-    $written = 0
-    [RawPrinterHelper]::WritePrinter($hPrinter, $pUnmanagedBytes, $Bytes.Length, [ref]$written)
-    
-    [System.Runtime.InteropServices.Marshal]::FreeCoTaskMem($pUnmanagedBytes)
-
-    [RawPrinterHelper]::EndPagePrinter($hPrinter)
-    [RawPrinterHelper]::EndDocPrinter($hPrinter)
-}
-catch {
-    Write-Error $_.Exception.Message
-    exit 1
-}
-finally {
-    [RawPrinterHelper]::ClosePrinter($hPrinter)
-}
+$bytes = [System.IO.File]::ReadAllBytes($filePath)
+$result = [RawPrinter]::SendBytesToPrinter($printerName, $bytes)
+if ($result) { Write-Output "OK" } else { throw "WritePrinter failed" }
 `
-    fs.writeFileSync(ps1Path, ps1Code)
-
-    return new Promise((resolve, reject) => {
-      const p = spawn('powershell', [
-        '-NoProfile',
-        '-ExecutionPolicy', 'Bypass',
-        '-File', ps1Path,
-        printerName,
-        tmp
+      const psFile = path.join(os.tmpdir(), `titimenu_ps_${Date.now()}.ps1`)
+      fs.writeFileSync(psFile, ps)
+      
+      const child = spawn('powershell.exe', [
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', psFile
       ])
       let stderr = ''
-      p.stderr.on('data', data => { stderr += data.toString() })
-      p.on('close', code => {
-        // Limpiar archivos temporales
+      child.stderr.on('data', d => stderr += d.toString())
+      child.on('close', code => {
         fs.unlink(tmp, () => {})
-        fs.unlink(ps1Path, () => {})
-        if (code === 0) {
-          resolve()
-        } else {
-          reject(new Error(`PowerShell print failed with code ${code}. Error: ${stderr}`))
-        }
+        fs.unlink(psFile, () => {})
+        if (code === 0) resolve()
+        else reject(new Error('PowerShell raw print failed: ' + stderr))
       })
-      p.on('error', err => {
+      child.on('error', err => {
         fs.unlink(tmp, () => {})
-        fs.unlink(ps1Path, () => {})
+        fs.unlink(psFile, () => {})
         reject(err)
       })
     })
