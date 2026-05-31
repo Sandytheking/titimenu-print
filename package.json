@@ -1,6 +1,6 @@
 {
   "name": "titimenu-print-bridge",
-  "version": "1.1.3",
+  "version": "1.1.4",
   "description": "TitiMenu Print Bridge - Thermal printer integration",
   "main": "main.js",
   "scripts": {

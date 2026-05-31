@@ -153,17 +153,117 @@ async function createPrinter(printerName) {
 async function sendRawToPrinter(buffer, printerName) {
   console.log(`[sendRawToPrinter] Enviando ${buffer.length} bytes a la impresora: ${printerName}`)
   if (process.platform === 'win32') {
-    // Windows: escribir buffer a temp y mandar raw al spooler
+    // Windows: usar PowerShell con P/Invoke para mandar raw directamente a la cola local del spooler
+    const ps1Path = path.join(os.tmpdir(), `titimenu_print_${Date.now()}.ps1`)
     const tmp = path.join(os.tmpdir(), `titimenu_${Date.now()}.bin`)
     fs.writeFileSync(tmp, buffer)
-    // Opción confiable: copy /b al puerto compartido \\localhost\printerName
+
+    const ps1Code = `
+$PrinterName = $args[0]
+$FilePath = $args[1]
+
+$code = @"
+using System;
+using System.Runtime.InteropServices;
+
+public class RawPrinterHelper {
+    [DllImport("winspool.drv", CharSet = CharSet.Ansi, SetLastError = true)]
+    public static extern bool OpenPrinter(string szPrinter, out IntPtr hPrinter, IntPtr pd);
+
+    [DllImport("winspool.drv", CharSet = CharSet.Ansi, SetLastError = true)]
+    public static extern bool StartDocPrinter(IntPtr hPrinter, int Level, [In, MarshalAs(UnmanagedType.Struct)] DOC_INFO_1 pDocInfo);
+
+    [DllImport("winspool.drv", SetLastError = true)]
+    public static extern bool StartPagePrinter(IntPtr hPrinter);
+
+    [DllImport("winspool.drv", SetLastError = true)]
+    public static extern bool WritePrinter(IntPtr hPrinter, IntPtr pBytes, int dwCount, out int dwWritten);
+
+    [DllImport("winspool.drv", SetLastError = true)]
+    public static extern bool EndPagePrinter(IntPtr hPrinter);
+
+    [DllImport("winspool.drv", SetLastError = true)]
+    public static extern bool EndDocPrinter(IntPtr hPrinter);
+
+    [DllImport("winspool.drv", SetLastError = true)]
+    public static extern bool ClosePrinter(IntPtr hPrinter);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
+    public class DOC_INFO_1 {
+        public string pDocName;
+        public string pOutputFile;
+        public string pDatatype;
+    }
+}
+"@
+
+try {
+    Add-Type -TypeDefinition $code -ErrorAction Stop
+} catch {
+    # Si ya está definido en la sesión
+}
+
+$hPrinter = [IntPtr]::Zero
+if (-not [RawPrinterHelper]::OpenPrinter($PrinterName, [ref]$hPrinter, [IntPtr]::Zero)) {
+    Write-Error "Failed to open printer '$PrinterName'."
+    exit 1
+}
+
+try {
+    $docInfo = New-Object RawPrinterHelper+DOC_INFO_1
+    $docInfo.pDocName = "TitiMenu Raw Print"
+    $docInfo.pDatatype = "RAW"
+
+    [RawPrinterHelper]::StartDocPrinter($hPrinter, 1, $docInfo)
+    [RawPrinterHelper]::StartPagePrinter($hPrinter)
+
+    $Bytes = [System.IO.File]::ReadAllBytes($FilePath)
+    $pUnmanagedBytes = [System.Runtime.InteropServices.Marshal]::AllocCoTaskMem($Bytes.Length)
+    [System.Runtime.InteropServices.Marshal]::Copy($Bytes, 0, $pUnmanagedBytes, $Bytes.Length)
+    
+    $written = 0
+    [RawPrinterHelper]::WritePrinter($hPrinter, $pUnmanagedBytes, $Bytes.Length, [ref]$written)
+    
+    [System.Runtime.InteropServices.Marshal]::FreeCoTaskMem($pUnmanagedBytes)
+
+    [RawPrinterHelper]::EndPagePrinter($hPrinter)
+    [RawPrinterHelper]::EndDocPrinter($hPrinter)
+}
+catch {
+    Write-Error $_.Exception.Message
+    exit 1
+}
+finally {
+    [RawPrinterHelper]::ClosePrinter($hPrinter)
+}
+`
+    fs.writeFileSync(ps1Path, ps1Code)
+
     return new Promise((resolve, reject) => {
-      const p = spawn('cmd', ['/c', 'copy', '/b', tmp, `\\\\localhost\\${printerName}`])
-      p.on('close', code => { 
-        fs.unlink(tmp, () => {}); 
-        code === 0 ? resolve() : reject(new Error('copy raw failed ' + code)) 
+      const p = spawn('powershell', [
+        '-NoProfile',
+        '-ExecutionPolicy', 'Bypass',
+        '-File', ps1Path,
+        printerName,
+        tmp
+      ])
+      let stderr = ''
+      p.stderr.on('data', data => { stderr += data.toString() })
+      p.on('close', code => {
+        // Limpiar archivos temporales
+        fs.unlink(tmp, () => {})
+        fs.unlink(ps1Path, () => {})
+        if (code === 0) {
+          resolve()
+        } else {
+          reject(new Error(`PowerShell print failed with code ${code}. Error: ${stderr}`))
+        }
       })
-      p.on('error', reject)
+      p.on('error', err => {
+        fs.unlink(tmp, () => {})
+        fs.unlink(ps1Path, () => {})
+        reject(err)
+      })
     })
   } else {
     // macOS / Linux: CUPS raw via lp
