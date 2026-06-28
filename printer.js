@@ -1431,6 +1431,154 @@ async function printBarComanda(items, printerName, orderInfo, businessInfo) {
   return await printStationComanda('COMANDA BAR', items, printerName, orderInfo, businessInfo)
 }
 
+// ─── Cierre de Caja ───────────────────────────────────────────────────────────
+async function printClosingReport(data, printerName) {
+  const currency = data.currency || store.get('businessCurrency', 'RD$')
+  const printMode = store.get('printMode', 'thermal')
+
+  const LINE = '================================'
+  const DASH = '--------------------------------'
+  const W = 32
+
+  const bizName = data.business_name || store.get('businessName', 'MI NEGOCIO')
+  const openedAt = data.opened_at || ''
+  const closedAt = data.closed_at || ''
+  const cashierName = data.cashier_name || null
+  const openingCash = parseFloat(data.opening_cash || 0)
+  const totalSales = parseFloat(data.total_sales || 0)
+  const totalCash = parseFloat(data.total_cash || 0)
+  const totalCard = parseFloat(data.total_card || 0)
+  const totalOrders = data.total_orders || 0
+  const expectedCash = parseFloat(data.expected_cash || 0)
+  const closingCash = parseFloat(data.closing_cash || 0)
+  const diff = parseFloat(data.cash_difference || 0)
+  const diffSign = diff >= 0 ? '+' : ''
+  const notes = data.notes || null
+
+  if (isTestMode(printerName)) {
+    writeTestOutput([
+      center(bizName, W),
+      center('CIERRE DE CAJA', W),
+      center(closedAt, W),
+      ...(cashierName ? [center(`Cajero/a: ${cashierName}`, W)] : []),
+      DASH,
+      pad('Apertura:', 16) + pad(openedAt, 16, true),
+      pad('Efectivo apertura:', 16) + pad(`${currency}${formatMoney(openingCash)}`, 16, true),
+      DASH,
+      pad('Total ventas:', 16) + pad(`${currency}${formatMoney(totalSales)}`, 16, true),
+      pad('  Efectivo:', 16) + pad(`${currency}${formatMoney(totalCash)}`, 16, true),
+      pad('  Tarjeta:', 16) + pad(`${currency}${formatMoney(totalCard)}`, 16, true),
+      pad('  Ordenes:', 16) + pad(String(totalOrders), 16, true),
+      DASH,
+      pad('Efectivo esperado:', 16) + pad(`${currency}${formatMoney(expectedCash)}`, 16, true),
+      pad('Efectivo contado:', 16) + pad(`${currency}${formatMoney(closingCash)}`, 16, true),
+      LINE,
+      pad('Diferencia:', 16) + pad(`${diffSign}${currency}${formatMoney(diff)}`, 16, true),
+      ...(notes ? [DASH, `Nota: ${notes}`] : []),
+      DASH,
+      center('Powered by TitiMenu', W),
+      '[CORTE]'
+    ])
+    return
+  }
+
+  if (printMode === 'system') {
+    const html = generateClosingReportHTML(data, bizName, currency)
+    await printHTML(html, printerName)
+    return
+  }
+
+  const isTCP = printerName && (IP_RE.test(printerName.trim()) || printerName.trim().startsWith('tcp://'))
+  const printer = await createPrinter(printerName)
+  if (isTCP) {
+    const connected = await printer.isPrinterConnected()
+    console.log('[printer] Connected:', connected, 'Printer:', printerName)
+    if (!connected) {
+      throw new Error(`Impresora no encontrada: ${printerName}`)
+    }
+  }
+
+  printer.alignCenter()
+  printer.bold(true)
+  printer.setTextSize(1, 1)
+  printer.println(bizName)
+  printer.setTextSize(0, 0)
+  printer.bold(false)
+  printer.println('CIERRE DE CAJA')
+  printer.println(closedAt)
+  if (cashierName) printer.println(`Cajero/a: ${cashierName}`)
+  printer.println(DASH)
+  printer.alignLeft()
+  printer.println(pad('Apertura:', 16) + pad(openedAt, 16, true))
+  printer.println(pad('Efectivo apertura:', 16) + pad(`${currency}${formatMoney(openingCash)}`, 16, true))
+  printer.println(DASH)
+  printer.bold(true)
+  printer.println(pad('Total ventas:', 16) + pad(`${currency}${formatMoney(totalSales)}`, 16, true))
+  printer.bold(false)
+  printer.println(pad('  Efectivo:', 16) + pad(`${currency}${formatMoney(totalCash)}`, 16, true))
+  printer.println(pad('  Tarjeta:', 16) + pad(`${currency}${formatMoney(totalCard)}`, 16, true))
+  printer.println(pad('  Ordenes:', 16) + pad(String(totalOrders), 16, true))
+  printer.println(DASH)
+  printer.println(pad('Efectivo esperado:', 16) + pad(`${currency}${formatMoney(expectedCash)}`, 16, true))
+  printer.println(pad('Efectivo contado:', 16) + pad(`${currency}${formatMoney(closingCash)}`, 16, true))
+  printer.println(LINE)
+  printer.bold(true)
+  printer.println(pad('Diferencia:', 16) + pad(`${diffSign}${currency}${formatMoney(diff)}`, 16, true))
+  printer.bold(false)
+  if (notes) {
+    printer.println(DASH)
+    printer.println(`Nota: ${notes}`)
+  }
+  printer.println(DASH)
+  printer.alignCenter()
+  printer.println('Powered by TitiMenu')
+  printer.cut()
+
+  if (isTCP) {
+    await printer.execute()
+  } else {
+    const buf = printer.getBuffer()
+    await sendRawToPrinter(buf, printerName)
+    printer.clear()
+  }
+}
+
+function generateClosingReportHTML(data, bizName, currency) {
+  const diff = parseFloat(data.cash_difference || 0)
+  const diffSign = diff >= 0 ? '+' : ''
+  const fmt = (n) => Number(n || 0).toLocaleString()
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Cierre de Caja</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;}
+  body{font-family:'Courier New',monospace;font-size:12px;width:80mm;max-width:80mm;padding:4mm;color:#000;}
+  .c{text-align:center;} .b{font-weight:bold;} .xl{font-size:16px;}
+  .div{border-top:1px dashed #000;margin:5px 0;} .div2{border-top:2px solid #000;margin:5px 0;}
+  .row{display:flex;justify-content:space-between;margin:2px 0;}
+  @media print{body{margin:0;}@page{margin:4mm;size:80mm auto;}}
+</style></head><body>
+  <div class="c b xl">${bizName}</div>
+  <div class="c b">CIERRE DE CAJA</div>
+  <div class="c" style="font-size:10px">${data.closed_at || ''}</div>
+  ${data.cashier_name ? `<div class="c" style="font-size:10px">Cajero/a: ${data.cashier_name}</div>` : ''}
+  <div class="div"></div>
+  <div class="row"><span>Apertura</span><span>${data.opened_at || ''}</span></div>
+  <div class="row"><span>Efectivo apertura</span><span>${currency}${fmt(data.opening_cash)}</span></div>
+  <div class="div"></div>
+  <div class="row b"><span>Total ventas</span><span>${currency}${fmt(data.total_sales)}</span></div>
+  <div class="row"><span>  Efectivo</span><span>${currency}${fmt(data.total_cash)}</span></div>
+  <div class="row"><span>  Tarjeta</span><span>${currency}${fmt(data.total_card)}</span></div>
+  <div class="row"><span>  Ordenes</span><span>${data.total_orders ?? 0}</span></div>
+  <div class="div"></div>
+  <div class="row"><span>Efectivo esperado</span><span>${currency}${fmt(data.expected_cash)}</span></div>
+  <div class="row"><span>Efectivo contado</span><span>${currency}${fmt(data.closing_cash)}</span></div>
+  <div class="div2"></div>
+  <div class="row b"><span>Diferencia</span><span>${diffSign}${currency}${fmt(diff)}</span></div>
+  ${data.notes ? `<div class="div"></div><div style="font-size:10px">Nota: ${data.notes}</div>` : ''}
+  <div class="div"></div>
+  <div class="c" style="font-size:10px">Powered by TitiMenu</div>
+</body></html>`
+}
+
 module.exports = {
   getUSBPrinters,
   printPOSReceipt,
@@ -1440,5 +1588,6 @@ module.exports = {
   printTestPage,
   printKitchenComanda,
   printBarComanda,
+  printClosingReport,
   TEST_PRINTER_NAME
 }

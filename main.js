@@ -3,7 +3,7 @@ const { autoUpdater } = require('electron-updater')
 const path = require('path')
 const http = require('http')
 const Store = require('electron-store')
-const { getUSBPrinters, printPOSReceipt, printFiscalReceipt, printTableComanda, printDeliveryTicket, printKitchenComanda, printBarComanda, printTestPage, TEST_PRINTER_NAME } = require('./printer')
+const { getUSBPrinters, printPOSReceipt, printFiscalReceipt, printTableComanda, printDeliveryTicket, printKitchenComanda, printBarComanda, printTestPage, printClosingReport, TEST_PRINTER_NAME } = require('./printer')
 const { setCallbacks, startListening, disconnect, fetchBusinessInfo } = require('./supabase')
 
 const store = new Store()
@@ -440,6 +440,26 @@ async function handleRequest(req, res) {
       console.log('[business] currency:', data.currency)
       await printFiscalReceipt(data, printerCaja)
       sendLog(`HTTP: Comprobante fiscal impreso — ${data.ncf || ''}`)
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ success: true }))
+      return
+    }
+
+    if (req.method === 'POST' && urlPath === '/print-closing') {
+      console.log('[HTTP] POST /print-closing recibido')
+      const data = await parseBody(req)
+      const legacyPrinter = store.get('printerName', '')
+      const printerCaja = store.has('printerCaja') ? store.get('printerCaja') : legacyPrinter
+      if (!isPrinterActive(printerCaja)) {
+        res.writeHead(503, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'No hay impresora de caja activa configurada' }))
+        return
+      }
+      data.business_name = data.business_name || store.get('businessName', 'Mi Negocio')
+      data.currency = data.currency || store.get('businessCurrency', 'RD$')
+      console.log('[business] currency:', data.currency)
+      await printClosingReport(data, printerCaja)
+      sendLog(`HTTP: Cierre de caja impreso — ${data.closing_id || data.closed_at || ''}`)
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ success: true }))
       return
