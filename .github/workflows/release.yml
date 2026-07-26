@@ -1,0 +1,47 @@
+name: Release Print Bridge
+
+# Se dispara al empujar un tag vX.Y.Z. Buildea mac (DMG x64+arm64) y Windows
+# (NSIS .exe) y publica a GitHub Releases, incluyendo los feeds de auto-update
+# (latest.yml para Windows, latest-mac.yml para mac). electron-builder toma la
+# versión de package.json — el tag DEBE coincidir (bump a 1.1.7 → tag v1.1.7).
+on:
+  push:
+    tags:
+      - 'v*'
+
+# El GITHUB_TOKEN automático de Actions puede crear el Release y subir assets con
+# este permiso. NO hace falta un PAT manual para publicar al MISMO repo.
+permissions:
+  contents: write
+
+jobs:
+  release:
+    strategy:
+      # Serializa mac → win: el primer job crea el Release; el segundo sube a él.
+      # Evita la carrera de dos jobs creando el mismo Release a la vez.
+      max-parallel: 1
+      matrix:
+        include:
+          - os: macos-latest
+            args: --mac --x64 --arm64
+          - os: windows-latest
+            args: --win --x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build & publish
+        run: npx electron-builder ${{ matrix.args }} --publish always
+        env:
+          # electron-builder lee GH_TOKEN; el token automático basta para este repo.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # App sin firmar (estado actual): evita que el build intente firmar/notarizar
+          # en macOS y falle por falta de certificado.
+          CSC_IDENTITY_AUTO_DISCOVERY: false

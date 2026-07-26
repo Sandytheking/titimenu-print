@@ -5,6 +5,22 @@ const fs = require('fs')
 const path = require('path')
 const execAsync = promisify(exec)
 
+// Método de pago TOLERANTE al desfase de versiones web↔bridge. Si el valor es un
+// crudo conocido (cash/card/transfer/mixed) lo traduce; si NO lo reconoce (p.ej.
+// ya viene en español desde un web nuevo, o un método futuro) lo imprime TAL CUAL.
+// Nunca coacciona un valor real a "Efectivo" (eso imprimía dinero falso). Solo el
+// vacío/ausente cae al default histórico.
+function translatePaymentMethod(raw) {
+  const v = (raw == null ? '' : String(raw)).trim()
+  switch (v.toLowerCase()) {
+    case 'cash':     return 'Efectivo'
+    case 'card':     return 'Tarjeta'
+    case 'transfer': return 'Transferencia'
+    case 'mixed':    return 'Mixto'
+    default:         return v || 'Efectivo'
+  }
+}
+
 const Store = require('electron-store')
 const store = new Store()
 const { BrowserWindow } = require('electron')
@@ -418,7 +434,7 @@ function generatePOSReceiptHTML(order, businessInfo, paperWidth) {
   const tipLabel = tipPct ? `Propina (${tipPct}%):` : 'Propina:'
   const discountPct = hasDiscount && order.discount_pct ? parseFloat(order.discount_pct) : null
   const discountLabel = discountPct ? `Descuento (${discountPct}%):` : 'Descuento:'
-  const payMethod = order.payment_method || 'Efectivo'
+  const payMethod = translatePaymentMethod(order.payment_method)
   const posNum = order.order_number || order.id?.slice(-6) || '000'
   const displayLabel = order.table_label 
     ? order.table_label 
@@ -642,7 +658,7 @@ function generateDeliveryTicketHTML(order, businessInfo, paperWidth) {
           <td class="right">${currency}${formatMoney(subtotal)}</td>
         </tr>
         <tr>
-          <td>🛵 Envío:</td>
+          <td>Envío:</td>
           <td class="right">${currency}${formatMoney(deliveryFee)}</td>
         </tr>` : ''}
         <tr class="bold text-medium">
@@ -825,7 +841,7 @@ async function printPOSReceipt(order, printerName, businessInfo) {
   const tipLabel = tipPct ? `Propina (${tipPct}%):` : 'Propina:'
   const discountPct = hasDiscount && order.discount_pct ? parseFloat(order.discount_pct) : null
   const discountLabel = discountPct ? `Descuento (${discountPct}%):` : 'Descuento:'
-  const payMethod = order.payment_method || 'Efectivo'
+  const payMethod = translatePaymentMethod(order.payment_method)
   const posNum = order.order_number || order.id?.slice(-6) || '000'
   const displayLabel = order.table_label 
     ? order.table_label 

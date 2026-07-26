@@ -33,7 +33,7 @@ function handleQuitAndInstall() {
         type: 'info',
         title: 'Actualización en macOS',
         message: 'La actualización automática no pudo completarse',
-        detail: 'Apple exige obligatoriamente que las aplicaciones de macOS estén firmadas digitalmente con un certificado de desarrollador oficial para poder auto-actualizarse.\n\nAl ser una compilación local/no firmada, el sistema de seguridad de macOS bloquea el reemplazo automático de los archivos.\n\nPor favor, descarga e instala la versión v1.0.7 manualmente usando el archivo DMG desde el repositorio de GitHub.',
+        detail: 'Apple exige obligatoriamente que las aplicaciones de macOS estén firmadas digitalmente con un certificado de desarrollador oficial para poder auto-actualizarse.\n\nAl ser una compilación local/no firmada, el sistema de seguridad de macOS bloquea el reemplazo automático de los archivos.\n\nPor favor, descarga e instala la última versión manualmente usando el archivo DMG desde el repositorio de GitHub.',
         buttons: ['Entendido', 'Abrir descargas en GitHub']
       }).then(({ response }) => {
         if (response === 1) {
@@ -400,6 +400,7 @@ async function handleRequest(req, res) {
         order_number: data.order_number,
         table_label: data.table_label || null,
         table_number: data.table_number || null,
+        order_type: data.order_type || null,
         delivery_fee: data.delivery_fee || null,
         items: (data.items || []).map(i => ({ name: i.name, qty: i.qty, price: i.price, subtotal: i.subtotal })),
         subtotal: data.subtotal,
@@ -419,7 +420,13 @@ async function handleRequest(req, res) {
         currency: data.currency || store.get('businessCurrency', 'RD$')
       }
       console.log('[business] currency:', businessInfo.currency)
-      await printPOSReceipt(order, printerCaja, businessInfo)
+      // Ruteo por order_type: delivery/takeout usan la plantilla que desglosa
+      // Subtotal + Envío + TOTAL; el resto (pos/mesa) sigue con el recibo POS.
+      if (data.order_type === 'delivery' || data.order_type === 'takeout') {
+        await printDeliveryTicket(order, printerCaja, businessInfo)
+      } else {
+        await printPOSReceipt(order, printerCaja, businessInfo)
+      }
       sendLog(`HTTP: Recibo impreso — Orden #${data.order_number}`)
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ success: true }))
