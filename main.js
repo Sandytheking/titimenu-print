@@ -401,6 +401,12 @@ async function handleRequest(req, res) {
         table_label: data.table_label || null,
         table_number: data.table_number || null,
         order_type: data.order_type || null,
+        // Campos del cliente para el ticket de delivery/takeout (la plantilla los
+        // imprime como Cliente/Tel/Dir/Nota). Nombres idénticos a la BD/camino automático.
+        customer_name: data.customer_name || null,
+        customer_phone: data.customer_phone || null,
+        customer_address: data.customer_address || null,
+        notes: data.notes || null,
         delivery_fee: data.delivery_fee || null,
         items: (data.items || []).map(i => ({ name: i.name, qty: i.qty, price: i.price, subtotal: i.subtotal })),
         subtotal: data.subtotal,

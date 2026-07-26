@@ -1051,8 +1051,17 @@ async function printDeliveryTicket(order, printerName, businessInfo) {
   const typeLabel = (order.order_type || 'delivery').toUpperCase()
   const customerName = order.customer_name || order.client_name || 'Cliente'
   const customerPhone = order.customer_phone || order.phone || order.tel || 'N/A'
+  // La dirección real vive en customer_address (la BD). Antes se leía delivery_address/
+  // address → nunca coincidía → la dirección no salía en NINGÚN ticket. Fix.
+  // customer_address = "dirección legible\nhttps://maps...": en papel la URL es inútil
+  // (el repartidor navega desde la app), así que imprime solo la parte antes del \n.
+  // Se hace aquí (plantilla) para que aplique también al camino AUTOMÁTICO. La térmica
+  // envuelve la línea larga sola — no se trunca.
+  const rawAddr = order.customer_address || order.delivery_address || order.address || ''
+  const deliveryAddr = String(rawAddr).split('\n')[0].trim()
+  const orderNotes = (order.notes || '').toString().trim()
   const items = order.items || order.order_items || []
-  
+
   const subtotal = Number(order.subtotal || 0)
   const deliveryFee = Number(order.delivery_fee || 0)
   const total = subtotal + deliveryFee
@@ -1078,7 +1087,8 @@ async function printDeliveryTicket(order, printerName, businessInfo) {
         pad('Envio:', 16) + pad(`${currency}${formatMoney(deliveryFee)}`, 16, true),
       ] : []),
       pad('TOTAL:', 16) + pad(`${currency}${formatMoney(total)}`, 16, true),
-      ...(order.delivery_address || order.address ? [DASH, `Dir: ${order.delivery_address || order.address}`] : []),
+      ...(deliveryAddr ? [DASH, `Dir: ${deliveryAddr}`] : []),
+      ...(orderNotes ? [`Nota: ${orderNotes}`] : []),
       LINE,
       '[CORTE]'
     ]
@@ -1119,9 +1129,12 @@ async function printDeliveryTicket(order, printerName, businessInfo) {
     printer.println(pad('Envio:', 16) + pad(`${currency}${formatMoney(deliveryFee)}`, 16, true))
   }
   printer.println(pad('TOTAL:', 16) + pad(`${currency}${formatMoney(total)}`, 16, true))
-  if (order.delivery_address || order.address) {
+  if (deliveryAddr) {
     printer.println(DASH)
-    printer.println(`Dir: ${order.delivery_address || order.address}`)
+    printer.println(`Dir: ${deliveryAddr}`)
+  }
+  if (orderNotes) {
+    printer.println(`Nota: ${orderNotes}`)
   }
   printer.println(LINE)
   printer.cut()
