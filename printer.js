@@ -605,7 +605,13 @@ function generateDeliveryTicketHTML(order, businessInfo, paperWidth) {
   const items = order.items || order.order_items || []
   const subtotal = Number(order.subtotal || 0)
   const deliveryFee = Number(order.delivery_fee || 0)
-  const total = subtotal + deliveryFee
+  // El descuento (cupón) aplica SOLO al subtotal; el envío nunca se descuenta.
+  // Antes se ignoraba → el ticket cobraba de más. TOTAL = subtotal − descuento + envío.
+  const discount = Number(order.discount_amount || 0)
+  const hasDiscount = discount > 0
+  const discountPct = hasDiscount && order.discount_pct ? Number(order.discount_pct) : null
+  const discountLabel = discountPct ? `Descuento (${discountPct}%):` : 'Descuento:'
+  const total = subtotal - discount + deliveryFee
   const address = order.delivery_address || order.address || ''
 
   let itemsHtml = items.map(item => {
@@ -652,15 +658,21 @@ function generateDeliveryTicketHTML(order, businessInfo, paperWidth) {
     
     <table class="totals-table">
       <tbody>
-        ${deliveryFee > 0 ? `
+        ${(deliveryFee > 0 || hasDiscount) ? `
         <tr>
           <td>Subtotal:</td>
           <td class="right">${currency}${formatMoney(subtotal)}</td>
         </tr>
+        ${hasDiscount ? `
+        <tr>
+          <td>${discountLabel}</td>
+          <td class="right">-${currency}${formatMoney(discount)}</td>
+        </tr>` : ''}
+        ${deliveryFee > 0 ? `
         <tr>
           <td>Envío:</td>
           <td class="right">${currency}${formatMoney(deliveryFee)}</td>
-        </tr>` : ''}
+        </tr>` : ''}` : ''}
         <tr class="bold text-medium">
           <td>TOTAL:</td>
           <td class="right">${currency}${formatMoney(total)}</td>
@@ -1064,7 +1076,13 @@ async function printDeliveryTicket(order, printerName, businessInfo) {
 
   const subtotal = Number(order.subtotal || 0)
   const deliveryFee = Number(order.delivery_fee || 0)
-  const total = subtotal + deliveryFee
+  // Descuento (cupón): SOLO sobre el subtotal; el envío nunca se descuenta.
+  // Antes total = subtotal + envío → cobraba el descuento de más. Fix v1.1.9.
+  const discount = Number(order.discount_amount || 0)
+  const hasDiscount = discount > 0
+  const discountPct = hasDiscount && order.discount_pct ? Number(order.discount_pct) : null
+  const discountLabel = discountPct ? `Descuento (${discountPct}%):` : 'Descuento:'
+  const total = subtotal - discount + deliveryFee
 
   if (isTestMode(printerName)) {
     const lines = [
@@ -1082,9 +1100,10 @@ async function printDeliveryTicket(order, printerName, businessInfo) {
         return left + ' '.repeat(Math.max(1, spaces)) + right
       }),
       DASH,
-      ...(deliveryFee > 0 ? [
+      ...((deliveryFee > 0 || hasDiscount) ? [
         pad('Subtotal:', 16) + pad(`${currency}${formatMoney(subtotal)}`, 16, true),
-        pad('Envio:', 16) + pad(`${currency}${formatMoney(deliveryFee)}`, 16, true),
+        ...(hasDiscount ? [pad(discountLabel, 16) + pad(`-${currency}${formatMoney(discount)}`, 16, true)] : []),
+        ...(deliveryFee > 0 ? [pad('Envio:', 16) + pad(`${currency}${formatMoney(deliveryFee)}`, 16, true)] : []),
       ] : []),
       pad('TOTAL:', 16) + pad(`${currency}${formatMoney(total)}`, 16, true),
       ...(deliveryAddr ? [DASH, `Dir: ${deliveryAddr}`] : []),
@@ -1124,9 +1143,10 @@ async function printDeliveryTicket(order, printerName, businessInfo) {
     printer.println(left + ' '.repeat(Math.max(1, spaces)) + right)
   })
   printer.println(DASH)
-  if (deliveryFee > 0) {
+  if (deliveryFee > 0 || hasDiscount) {
     printer.println(pad('Subtotal:', 16) + pad(`${currency}${formatMoney(subtotal)}`, 16, true))
-    printer.println(pad('Envio:', 16) + pad(`${currency}${formatMoney(deliveryFee)}`, 16, true))
+    if (hasDiscount) printer.println(pad(discountLabel, 16) + pad(`-${currency}${formatMoney(discount)}`, 16, true))
+    if (deliveryFee > 0) printer.println(pad('Envio:', 16) + pad(`${currency}${formatMoney(deliveryFee)}`, 16, true))
   }
   printer.println(pad('TOTAL:', 16) + pad(`${currency}${formatMoney(total)}`, 16, true))
   if (deliveryAddr) {
