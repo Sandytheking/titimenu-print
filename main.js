@@ -441,6 +441,12 @@ async function handleRequest(req, res) {
         discount_amount: data.discount_amount,
         discount_pct: data.discount_pct,
         payment_method: data.payment_method,
+        // Recibido/Cambio: el ticket los muestra en cobros en efectivo (transparencia
+        // del cobro en la puerta). En el camino automático son columnas de pos_orders;
+        // aquí hay que listarlos o no llegan a la plantilla.
+        cash_given: data.cash_given ?? null,
+        card_amount: data.card_amount ?? null,
+        change_amount: data.change_amount ?? null,
         created_at: data.date
       }
       const businessInfo = {

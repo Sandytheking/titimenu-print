@@ -439,6 +439,12 @@ function generatePOSReceiptHTML(order, businessInfo, paperWidth) {
   const discountPct = hasDiscount && order.discount_pct ? parseFloat(order.discount_pct) : null
   const discountLabel = discountPct ? `Descuento (${discountPct}%):` : 'Descuento:'
   const payMethod = translatePaymentMethod(order.payment_method)
+  // Recibido / Cambio: solo en efectivo con recibido > 0 (mismo criterio que la
+  // ruta térmica y que TitiPrint, que compara el método CRUDO).
+  const rawMethod = (order.payment_method || '').toString().trim().toLowerCase()
+  const cashGiven = Number(order.cash_given || 0)
+  const changeGiven = Number(order.change_amount || 0)
+  const showCashLines = rawMethod === 'cash' && cashGiven > 0
   // ── Datos del cliente (delivery/takeout hechos DESDE EL POS) ──────────────
   // El payload ya los mandaba; esta plantilla no los leía, así que un delivery
   // del POS salía sin nombre ni dirección mientras el del menú digital (que rutea
@@ -550,7 +556,7 @@ function generatePOSReceiptHTML(order, businessInfo, paperWidth) {
           <td class="right">${currency}${formatMoney(total)}</td>
         </tr>
         <tr>
-          <td style="padding-top: 6px;">Pago: ${payMethod}</td>
+          <td style="padding-top: 6px;">Pago: ${payMethod}${showCashLines ? `<br>Recibido: ${currency}${formatMoney(cashGiven)}${changeGiven > 0 ? `<br><b>Cambio: ${currency}${formatMoney(changeGiven)}</b>` : ''}` : ''}</td>
           <td></td>
         </tr>
       </tbody>
@@ -918,6 +924,13 @@ async function printPOSReceipt(order, printerName, businessInfo) {
   // Cajero que atendió la venta. Paridad con TitiPrint, que ya lo imprime.
   const cashierName = order.cashier_name || null
   const payMethod = translatePaymentMethod(order.payment_method)
+  // Recibido / Cambio: SOLO en efectivo con recibido > 0, igual que TitiPrint (que
+  // compara el método CRUDO, no el traducido). En tarjeta no aplica; en mixto tampoco
+  // se imprimen, para no divergir del otro bridge.
+  const rawMethod = (order.payment_method || '').toString().trim().toLowerCase()
+  const cashGiven = Number(order.cash_given || 0)
+  const changeGiven = Number(order.change_amount || 0)
+  const showCashLines = rawMethod === 'cash' && cashGiven > 0
   const posNum = order.order_number || order.id?.slice(-6) || '000'
   // Distintivo del encabezado. Con `table_label` (camino HTTP: el web lo manda ya
   // armado) se usa tal cual; el camino AUTOMÁTICO (realtime de pos_orders) NO tiene
@@ -974,6 +987,8 @@ async function printPOSReceipt(order, printerName, businessInfo) {
     ] : []),
     pad('TOTAL:', 16) + pad(`${currency}${formatMoney(total)}`, 16, true),
     `Pago: ${payMethod}`,
+    ...(showCashLines ? [pad('Recibido:', 16) + pad(`${currency}${formatMoney(cashGiven)}`, 16, true)] : []),
+    ...(showCashLines && changeGiven > 0 ? [pad('Cambio:', 16) + pad(`${currency}${formatMoney(changeGiven)}`, 16, true)] : []),
     ...(orderNotes ? [`Nota: ${orderNotes}`] : []),
     LINE,
     center('¡Gracias por su visita!', W),
@@ -1029,6 +1044,14 @@ async function printPOSReceipt(order, printerName, businessInfo) {
   }
   printer.println(pad('TOTAL:', 16) + pad(`${currency}${formatMoney(total)}`, 16, true))
   printer.println(`Pago: ${payMethod}`)
+  if (showCashLines) {
+    printer.println(pad('Recibido:', 16) + pad(`${currency}${formatMoney(cashGiven)}`, 16, true))
+    if (changeGiven > 0) {
+      printer.bold(true)
+      printer.println(pad('Cambio:', 16) + pad(`${currency}${formatMoney(changeGiven)}`, 16, true))
+      printer.bold(false)
+    }
+  }
   if (orderNotes) printer.println(`Nota: ${orderNotes}`)
   printer.println(LINE)
   printer.alignCenter()
