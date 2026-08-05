@@ -14,6 +14,20 @@ El POST rutea por `order_type` del payload: `delivery`/`takeout` → `printDeliv
 (desglosa Subtotal + Envío + TOTAL); el resto (`pos`/`table`) → `printPOSReceipt`. El WEB
 es la fuente única del payload (estructura, `order_type`, desglose, labels).
 
+**Un delivery hecho DESDE EL POS llega con `order_type: 'pos'`** (esa clave elige la
+PLANTILLA, no el tipo de pedido), así que lo imprime `printPOSReceipt` — y debe hacerlo
+completo: v1.2.0 le agregó Cliente/Tel/Dir, la línea de Envío, la Nota y el Cajero/a, con
+las MISMAS claves y la misma regla de dirección (`customer_address.split('\n')[0].trim()`)
+que `printDeliveryTicket`. NO rutear el POS a la plantilla del menú: perdería método de
+pago, cambio y RNC — que en un delivery del POS importan más, porque el repartidor cobra
+en la puerta y el ticket es comprobante fiscal. Todos los bloques son condicionales: una
+venta de mostrador sin `customer_*` imprime exactamente igual que antes.
+
+⚠️ Deuda conocida: `printDeliveryTicket` cae a `order.address` como último fallback de la
+dirección del cliente, y en los payloads del web `address` es la dirección del NEGOCIO —
+un takeout sin `customer_address` imprimiría la dirección del local como si fuera la del
+cliente. `printPOSReceipt` NO copia ese fallback a propósito.
+
 ## LECCIONES DE SANGRE
 1. **Cero emojis en payloads de impresión.** Las ESC/POS no soportan emojis: los imprimen
    como `??`. Todo texto que va a papel (labels, líneas, "Envío", "Delivery") es ASCII puro.

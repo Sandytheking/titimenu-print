@@ -426,15 +426,40 @@ function generatePOSReceiptHTML(order, businessInfo, paperWidth) {
   const hasTip = tip > 0
   const discount = parseFloat(order.discount_amount || 0)
   const hasDiscount = discount > 0
-  const showBreakdown = hasTip || hasDiscount
+  // El envío entra al desglose: sin su línea, el TOTAL de un delivery del POS no
+  // se puede verificar sumando lo impreso.
+  const deliveryFee = Number(order.delivery_fee || 0)
+  const hasDeliveryFee = deliveryFee > 0
+  const showBreakdown = hasTip || hasDiscount || hasDeliveryFee
   const subtotal = showBreakdown
-    ? parseFloat(order.subtotal || (total + discount - tip))
+    ? parseFloat(order.subtotal || (total + discount - tip - deliveryFee))
     : 0
   const tipPct = hasTip && order.tip_pct ? parseFloat(order.tip_pct) : null
   const tipLabel = tipPct ? `Propina (${tipPct}%):` : 'Propina:'
   const discountPct = hasDiscount && order.discount_pct ? parseFloat(order.discount_pct) : null
   const discountLabel = discountPct ? `Descuento (${discountPct}%):` : 'Descuento:'
   const payMethod = translatePaymentMethod(order.payment_method)
+  // ── Datos del cliente (delivery/takeout hechos DESDE EL POS) ──────────────
+  // El payload ya los mandaba; esta plantilla no los leía, así que un delivery
+  // del POS salía sin nombre ni dirección mientras el del menú digital (que rutea
+  // a printDeliveryTicket) sí los imprimía. MISMAS claves que esa plantilla.
+  //
+  // OJO: aquí NO se cae a `order.address` como fallback de la dirección. En el
+  // payload del POS `address` es la dirección del NEGOCIO (encabezado): usarla
+  // imprimiría la dirección del local como si fuera la del cliente en TODA venta
+  // de mostrador.
+  const customerName = order.customer_name || order.client_name || null
+  const customerPhone = order.customer_phone || order.phone || order.tel || null
+  // customer_address = "dirección legible\nhttps://maps...": en papel la URL es
+  // inútil, se imprime solo la parte antes del salto. Misma regla que
+  // printDeliveryTicket y que TicketBuilder de TitiPrint. No se trunca: la
+  // térmica envuelve la línea larga sola.
+  const rawCustomerAddr = order.customer_address || order.delivery_address || ''
+  const customerAddr = String(rawCustomerAddr).split('\n')[0].trim()
+  const hasCustomer = !!(customerName || customerPhone || customerAddr)
+  const orderNotes = (order.notes || '').toString().trim()
+  // Cajero que atendió la venta. Paridad con TitiPrint, que ya lo imprime.
+  const cashierName = order.cashier_name || null
   const posNum = order.order_number || order.id?.slice(-6) || '000'
   const displayLabel = order.table_label 
     ? order.table_label 
@@ -469,6 +494,11 @@ function generatePOSReceiptHTML(order, businessInfo, paperWidth) {
         <td>${discountLabel}</td>
         <td class="right">-${currency}${formatMoney(discount)}</td>
       </tr>` : ''}
+      ${hasDeliveryFee ? `
+      <tr>
+        <td>Envio:</td>
+        <td class="right">${currency}${formatMoney(deliveryFee)}</td>
+      </tr>` : ''}
       ${hasTip ? `
       <tr>
         <td>${tipLabel}</td>
@@ -485,9 +515,18 @@ function generatePOSReceiptHTML(order, businessInfo, paperWidth) {
       ${address ? `<div class="business-details">${address}</div>` : ''}
       <div class="tag">** ${displayLabel} **</div>
       <div class="business-details" style="margin-top: 4px;">${dateStr}</div>
+      ${cashierName ? `<div class="business-details">Cajero/a: ${cashierName}</div>` : ''}
     </div>
-    
+
     <div class="divider"></div>
+
+    ${hasCustomer ? `
+    <div>
+      ${customerName ? `<div>Cliente: ${customerName}</div>` : ''}
+      ${customerPhone ? `<div>Tel: ${customerPhone}</div>` : ''}
+      ${customerAddr ? `<div>Dir: ${customerAddr}</div>` : ''}
+    </div>
+    <div class="divider"></div>` : ''}
     
     <table class="items-table">
       <thead>
@@ -845,14 +884,39 @@ async function printPOSReceipt(order, printerName, businessInfo) {
   const hasTip = tip > 0
   const discount = parseFloat(order.discount_amount || 0)
   const hasDiscount = discount > 0
-  const showBreakdown = hasTip || hasDiscount
+  // El envío entra al desglose: sin su línea, el TOTAL de un delivery del POS no
+  // se puede verificar sumando lo impreso. Declarado ANTES de showBreakdown.
+  const deliveryFee = Number(order.delivery_fee || 0)
+  const hasDeliveryFee = deliveryFee > 0
+  const showBreakdown = hasTip || hasDiscount || hasDeliveryFee
   const subtotal = showBreakdown
-    ? parseFloat(order.subtotal || (total + discount - tip))
+    ? parseFloat(order.subtotal || (total + discount - tip - deliveryFee))
     : 0
   const tipPct = hasTip && order.tip_pct ? parseFloat(order.tip_pct) : null
   const tipLabel = tipPct ? `Propina (${tipPct}%):` : 'Propina:'
   const discountPct = hasDiscount && order.discount_pct ? parseFloat(order.discount_pct) : null
   const discountLabel = discountPct ? `Descuento (${discountPct}%):` : 'Descuento:'
+  // ── Datos del cliente (delivery/takeout hechos DESDE EL POS) ──────────────
+  // El payload ya los mandaba; esta plantilla no los leía, así que un delivery del
+  // POS salía sin nombre ni dirección mientras el del menú digital (que rutea a
+  // printDeliveryTicket) sí los imprimía. MISMAS claves que esa plantilla.
+  //
+  // OJO: aquí NO se cae a `order.address` como fallback de la dirección. En el
+  // payload del POS `address` es la dirección del NEGOCIO (encabezado): usarla
+  // imprimiría la dirección del local como si fuera la del cliente en TODA venta
+  // de mostrador.
+  const customerName = order.customer_name || order.client_name || null
+  const customerPhone = order.customer_phone || order.phone || order.tel || null
+  // customer_address = "dirección legible\nhttps://maps...": en papel la URL es
+  // inútil, se imprime solo la parte antes del salto. Misma regla que
+  // printDeliveryTicket y que TicketBuilder de TitiPrint. No se trunca: la térmica
+  // envuelve la línea larga sola.
+  const rawCustomerAddr = order.customer_address || order.delivery_address || ''
+  const customerAddr = String(rawCustomerAddr).split('\n')[0].trim()
+  const hasCustomer = !!(customerName || customerPhone || customerAddr)
+  const orderNotes = (order.notes || '').toString().trim()
+  // Cajero que atendió la venta. Paridad con TitiPrint, que ya lo imprime.
+  const cashierName = order.cashier_name || null
   const payMethod = translatePaymentMethod(order.payment_method)
   const posNum = order.order_number || order.id?.slice(-6) || '000'
   const displayLabel = order.table_label 
@@ -871,7 +935,16 @@ async function printPOSReceipt(order, printerName, businessInfo) {
     ...(address ? [center(address, W)] : []),
     center(`** ${displayLabel} **`, W),
     center(dateStr, W),
+    ...(cashierName ? [center(`Cajero/a: ${cashierName}`, W)] : []),
     LINE,
+    // Bloque del cliente: SOLO si vino en el payload. Una venta de mostrador
+    // (sin customer_*) imprime exactamente igual que antes.
+    ...(hasCustomer ? [
+      ...(customerName ? [`Cliente: ${customerName}`] : []),
+      ...(customerPhone ? [`Tel: ${customerPhone}`] : []),
+      ...(customerAddr ? [`Dir: ${customerAddr}`] : []),
+      DASH,
+    ] : []),
     ...items.map(item => {
       const left = `${item.quantity || item.qty || 1}x ${item.name || item.product_name || ''}`
       const right = `${currency}${formatMoney((item.unit_price || item.price || 0) * (item.quantity || item.qty || 1))}`
@@ -882,10 +955,12 @@ async function printPOSReceipt(order, printerName, businessInfo) {
     ...(showBreakdown ? [
       pad('SUBTOTAL:', 16) + pad(`${currency}${formatMoney(subtotal)}`, 16, true),
       ...(hasDiscount ? [pad(discountLabel, 16) + pad(`-${currency}${formatMoney(discount)}`, 16, true)] : []),
+      ...(hasDeliveryFee ? [pad('Envio:', 16) + pad(`${currency}${formatMoney(deliveryFee)}`, 16, true)] : []),
       ...(hasTip ? [pad(tipLabel, 16) + pad(`+${currency}${formatMoney(tip)}`, 16, true)] : []),
     ] : []),
     pad('TOTAL:', 16) + pad(`${currency}${formatMoney(total)}`, 16, true),
     `Pago: ${payMethod}`,
+    ...(orderNotes ? [`Nota: ${orderNotes}`] : []),
     LINE,
     center('¡Gracias por su visita!', W),
     LINE,
@@ -915,8 +990,16 @@ async function printPOSReceipt(order, printerName, businessInfo) {
   if (address) printer.println(center(address, W))
   printer.println(center(`** ${displayLabel} **`, W))
   printer.println(center(dateStr, W))
+  if (cashierName) printer.println(center(`Cajero/a: ${cashierName}`, W))
   printer.println(LINE)
   printer.alignLeft()
+  // Bloque del cliente: SOLO si vino en el payload (cero regresión en mostrador).
+  if (hasCustomer) {
+    if (customerName) printer.println(`Cliente: ${customerName}`)
+    if (customerPhone) printer.println(`Tel: ${customerPhone}`)
+    if (customerAddr) printer.println(`Dir: ${customerAddr}`)
+    printer.println(DASH)
+  }
   items.forEach(item => {
     const left = `${item.quantity || item.qty || 1}x ${item.name || item.product_name || ''}`
     const right = `${currency}${formatMoney((item.unit_price || item.price || 0) * (item.quantity || item.qty || 1))}`
@@ -927,10 +1010,12 @@ async function printPOSReceipt(order, printerName, businessInfo) {
   if (showBreakdown) {
     printer.println(pad('SUBTOTAL:', 16) + pad(`${currency}${formatMoney(subtotal)}`, 16, true))
     if (hasDiscount) printer.println(pad(discountLabel, 16) + pad(`-${currency}${formatMoney(discount)}`, 16, true))
+    if (hasDeliveryFee) printer.println(pad('Envio:', 16) + pad(`${currency}${formatMoney(deliveryFee)}`, 16, true))
     if (hasTip) printer.println(pad(tipLabel, 16) + pad(`+${currency}${formatMoney(tip)}`, 16, true))
   }
   printer.println(pad('TOTAL:', 16) + pad(`${currency}${formatMoney(total)}`, 16, true))
   printer.println(`Pago: ${payMethod}`)
+  if (orderNotes) printer.println(`Nota: ${orderNotes}`)
   printer.println(LINE)
   printer.alignCenter()
   printer.println('¡Gracias por su visita!')
