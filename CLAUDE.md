@@ -23,10 +23,20 @@ pago, cambio y RNC — que en un delivery del POS importan más, porque el repar
 en la puerta y el ticket es comprobante fiscal. Todos los bloques son condicionales: una
 venta de mostrador sin `customer_*` imprime exactamente igual que antes.
 
-⚠️ Deuda conocida: `printDeliveryTicket` cae a `order.address` como último fallback de la
-dirección del cliente, y en los payloads del web `address` es la dirección del NEGOCIO —
-un takeout sin `customer_address` imprimiría la dirección del local como si fuera la del
-cliente. `printPOSReceipt` NO copia ese fallback a propósito.
+## 🐞 BUG ABIERTO — `printDeliveryTicket` imprime la dirección del negocio como si fuera del cliente
+**Qué pasa:** `printDeliveryTicket` resuelve la dirección con
+`order.customer_address || order.delivery_address || order.address`. En los payloads del
+web, **`address` es la dirección del NEGOCIO** (va en el encabezado). Así que un pedido sin
+`customer_address` —un **takeout**, o un delivery de texto libre que quedó sin dirección—
+imprime `Dir: <dirección del local>` como si fuera la del cliente. No es cosmético: manda
+al repartidor a la puerta del propio restaurante.
+
+**Por qué no se arregló todavía:** es la plantilla que se está usando de referencia para el
+careo de tickets entre los dos bridges (v1.2.0). Se corrige en su propio turno, con su
+prueba: quitar el fallback `|| order.address` y verificar que un takeout imprima sin línea
+`Dir:` en vez de con la del local.
+
+`printPOSReceipt` NO copia ese fallback a propósito (ver v1.2.0).
 
 ## LECCIONES DE SANGRE
 1. **Cero emojis en payloads de impresión.** Las ESC/POS no soportan emojis: los imprimen
