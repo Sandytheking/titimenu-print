@@ -919,13 +919,27 @@ async function printPOSReceipt(order, printerName, businessInfo) {
   const cashierName = order.cashier_name || null
   const payMethod = translatePaymentMethod(order.payment_method)
   const posNum = order.order_number || order.id?.slice(-6) || '000'
-  const displayLabel = order.table_label 
-    ? order.table_label 
-    : order.table_number 
-      ? `Mesa ${order.table_number}` 
-      : order.order_number 
-        ? `POS #${order.order_number}` 
-        : 'POS'
+  // Distintivo del encabezado. Con `table_label` (camino HTTP: el web lo manda ya
+  // armado) se usa tal cual; el camino AUTOMÁTICO (realtime de pos_orders) NO tiene
+  // esa columna, así que el label se arma aquí desde order_type + customer_name —
+  // si no, un delivery del POS salía como "POS #78" y el ticket no se distinguía de
+  // una venta de mostrador. ASCII y en mayúsculas, igual que TitiPrint y el web:
+  // las ESC/POS imprimen los emojis como "??".
+  const typeLabel = (() => {
+    const t = (order.order_type || '').toLowerCase()
+    if (t !== 'delivery' && t !== 'takeout') return null
+    const who = order.customer_name ? ` - ${order.customer_name}` : ''
+    return `${t.toUpperCase()}${who}`
+  })()
+  const displayLabel = order.table_label
+    ? order.table_label
+    : typeLabel
+      ? typeLabel
+      : order.table_number
+        ? `Mesa ${order.table_number}`
+        : order.order_number
+          ? `POS #${order.order_number}`
+          : 'POS'
 
   const lines = [
     LINE,

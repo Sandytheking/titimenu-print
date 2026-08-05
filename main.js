@@ -4,7 +4,7 @@ const path = require('path')
 const http = require('http')
 const Store = require('electron-store')
 const { getUSBPrinters, printPOSReceipt, printFiscalReceipt, printTableComanda, printDeliveryTicket, printKitchenComanda, printBarComanda, printTestPage, printClosingReport, TEST_PRINTER_NAME } = require('./printer')
-const { setCallbacks, startListening, disconnect, fetchBusinessInfo } = require('./supabase')
+const { setCallbacks, startListening, disconnect, fetchBusinessInfo, getClient } = require('./supabase')
 
 const store = new Store()
 
@@ -253,6 +253,25 @@ function isPrinterActive(name) {
   return true
 }
 
+// El cajero no está en pos_orders: vive en pos_sessions.cashier_name. En el camino
+// automático (realtime) la fila llega sin él, así que se resuelve por session_id antes
+// de imprimir. Falla en silencio a null: un ticket sin cajero es mejor que no imprimir.
+async function resolveCashierName(order) {
+  if (order?.cashier_name) return order.cashier_name          // camino HTTP: ya viene
+  if (!order?.session_id) return null
+  try {
+    const client = getClient()
+    if (!client) return null
+    const { data, error } = await client
+      .from('pos_sessions').select('cashier_name').eq('id', order.session_id).maybeSingle()
+    if (error) { console.warn('[cashier] no se pudo leer la sesión:', error.message); return null }
+    return data?.cashier_name || null
+  } catch (e) {
+    console.warn('[cashier] error resolviendo el cajero:', e.message)
+    return null
+  }
+}
+
 async function onNewOrder(type, order) {
   console.log('[printer] printerCaja:', JSON.stringify(store.get('printerCaja')))
   console.log('[printer] printerCocina:', JSON.stringify(store.get('printerCocina')))
@@ -317,7 +336,9 @@ async function onNewOrder(type, order) {
   try {
     if (type === 'pos') {
       if (isPrinterActive(printerCaja)) {
-        await printPOSReceipt(order, printerCaja, businessInfo)
+        // pos_orders no trae el cajero; se busca en la sesión antes de imprimir.
+        const cashierName = await resolveCashierName(order)
+        await printPOSReceipt({ ...order, cashier_name: cashierName }, printerCaja, businessInfo)
       }
       // Also separate and print kitchen/bar comandas for POS orders!
       await printComandas()
@@ -406,6 +427,10 @@ async function handleRequest(req, res) {
         customer_name: data.customer_name || null,
         customer_phone: data.customer_phone || null,
         customer_address: data.customer_address || null,
+        // El whitelist de este mapeo es explícito: lo que no se liste NO llega a la
+        // plantilla por muy bien que lo mande el web. cashier_name faltaba, y por eso
+        // el "Cajero/a" no salía aunque el payload lo traía.
+        cashier_name: data.cashier_name || null,
         notes: data.notes || null,
         delivery_fee: data.delivery_fee || null,
         items: (data.items || []).map(i => ({ name: i.name, qty: i.qty, price: i.price, subtotal: i.subtotal })),
