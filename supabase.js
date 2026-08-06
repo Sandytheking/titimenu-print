@@ -172,18 +172,34 @@ function disconnect() {
   setStatus(false)
 }
 
+// REGLA (aprendida a golpes): con RLS, una consulta puede devolver CERO filas sin
+// error — `data: null, error: null`. Un `catch` o un `|| {}` la convierte en un vacío
+// indistinguible de "no hay datos", y el fallo queda invisible en los logs. Esto costó
+// dos rondas de arreglos con el cajero: el bridge usa la anon key SIN sesión, así que
+// toda tabla con política por `auth.uid()` le responde vacío. Si una consulta vuelve
+// vacía sin error, hay que decirlo y nombrar la sospecha.
+function warnIfEmpty(label, { data, error }) {
+  if (error) {
+    console.warn(`[${label}] error de consulta: ${error.message}`)
+  } else if (data == null) {
+    console.warn(`[${label}] 0 filas sin error — sospecha RLS: este cliente usa la anon key sin sesión (auth.uid() = NULL)`)
+  }
+  return data
+}
+
 async function fetchBusinessInfo(businessId) {
   try {
     const client = getClient()
-    const { data } = await client
+    const res = await client
       .from('businesses')
       .select('id, name, currency, rnc, legal_name, address')
       .eq('id', businessId)
       .single()
-    return data || {}
-  } catch (_) {
+    return warnIfEmpty('businesses', res) || {}
+  } catch (e) {
+    console.warn('[businesses] excepción al leer el negocio:', e.message)
     return {}
   }
 }
 
-module.exports = { getClient, setCallbacks, startListening, disconnect, isConnected: () => isConnected, fetchBusinessInfo }
+module.exports = { getClient, setCallbacks, startListening, disconnect, isConnected: () => isConnected, fetchBusinessInfo, warnIfEmpty }

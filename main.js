@@ -4,7 +4,7 @@ const path = require('path')
 const http = require('http')
 const Store = require('electron-store')
 const { getUSBPrinters, printPOSReceipt, printFiscalReceipt, printTableComanda, printDeliveryTicket, printKitchenComanda, printBarComanda, printTestPage, printClosingReport, TEST_PRINTER_NAME } = require('./printer')
-const { setCallbacks, startListening, disconnect, fetchBusinessInfo, getClient } = require('./supabase')
+const { setCallbacks, startListening, disconnect, fetchBusinessInfo } = require('./supabase')
 
 const store = new Store()
 
@@ -253,24 +253,14 @@ function isPrinterActive(name) {
   return true
 }
 
-// El cajero no está en pos_orders: vive en pos_sessions.cashier_name. En el camino
-// automático (realtime) la fila llega sin él, así que se resuelve por session_id antes
-// de imprimir. Falla en silencio a null: un ticket sin cajero es mejor que no imprimir.
-async function resolveCashierName(order) {
-  if (order?.cashier_name) return order.cashier_name          // camino HTTP: ya viene
-  if (!order?.session_id) return null
-  try {
-    const client = getClient()
-    if (!client) return null
-    const { data, error } = await client
-      .from('pos_sessions').select('cashier_name').eq('id', order.session_id).maybeSingle()
-    if (error) { console.warn('[cashier] no se pudo leer la sesión:', error.message); return null }
-    return data?.cashier_name || null
-  } catch (e) {
-    console.warn('[cashier] error resolviendo el cajero:', e.message)
-    return null
-  }
-}
+// NOTA: aquí vivía un resolveCashierName() que leía pos_sessions por session_id. Se
+// eliminó en v1.2.3 porque NO PODÍA funcionar: el cliente de este bridge usa la anon key
+// sin sesión de usuario, así que `auth.uid()` es NULL y la única política de pos_sessions
+// (business_pos_sessions) resolvía a cero filas. Y fallaba en SILENCIO — .maybeSingle()
+// con 0 filas devuelve data:null, error:null —, lo que costó dos rondas de arreglos sin
+// rastro en los logs. Desde la migración 20260805 el cajero es COLUMNA de pos_orders, así
+// que la fila del realtime ya lo trae: se lee directo, igual que customer_name. Cero
+// consultas, cero round-trip, cero modo de fallo invisible.
 
 async function onNewOrder(type, order) {
   console.log('[printer] printerCaja:', JSON.stringify(store.get('printerCaja')))
@@ -336,9 +326,8 @@ async function onNewOrder(type, order) {
   try {
     if (type === 'pos') {
       if (isPrinterActive(printerCaja)) {
-        // pos_orders no trae el cajero; se busca en la sesión antes de imprimir.
-        const cashierName = await resolveCashierName(order)
-        await printPOSReceipt({ ...order, cashier_name: cashierName }, printerCaja, businessInfo)
+        // `order` es la fila cruda de pos_orders: cashier_name viene en ella.
+        await printPOSReceipt(order, printerCaja, businessInfo)
       }
       // Also separate and print kitchen/bar comandas for POS orders!
       await printComandas()
