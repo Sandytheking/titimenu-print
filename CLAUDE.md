@@ -39,9 +39,10 @@ código explica por qué — la deducción tenía un eslabón falso:
   (`store.get('businessAddress')`), jamás una del objeto `order`. O sea que
   `order.address` siempre fue `undefined` por esta vía: el fallback era inalcanzable desde
   el primer día, no se arregló en ningún commit.
-- **Camino automático:** la plantilla recibe `payload.new`, la fila cruda de `orders`, donde
-  la dirección del cliente es `customer_address`. El web no escribe ninguna columna
-  `address` ahí (`publicMenu.ts`, `reparto/page.tsx`).
+- **Camino automático:** la plantilla recibe `payload.new`, la fila cruda de `orders`.
+  **Certificado contra la BD por Fable (2026-08-09): la única columna con "address" en
+  `orders` es `customer_address` — no existe `address` a secas.** Así que por esta vía la
+  clave tampoco llega: no es que venga vacía, es que la columna no existe.
 
 **Ojo con la hipótesis descartada:** no lo arregló el módulo compartido (F0) ni `posReceipt`
 (F2) — son Kotlin, y `printer.js` no se tocó en ninguna de las dos. El fallback **sigue
