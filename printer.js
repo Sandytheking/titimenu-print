@@ -115,6 +115,38 @@ function formatTime(dateStr) {
   return d.toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' })
 }
 
+// ── Desglose de ITBIS del recibo (opción del negocio, NO fiscal) ──────────────
+// Devuelve las líneas a imprimir debajo del TOTAL, o [] si no toca.
+//
+// Prioridad: lo que MANDA EL WEB (tax_base + itbis del payload) gana siempre — el web es la
+// fuente del dinero y este bridge solo imprime. El cálculo local es el respaldo del camino
+// AUTOMÁTICO (realtime), donde la plantilla recibe la fila cruda de la BD y no hay payload:
+// sin él, el mismo negocio vería el desglose en un recibo y no en el otro.
+//
+// La fórmula es la misma de TaxBreakdown (módulo compartido) y tip.ts (web): la propina se
+// resta ANTES de dividir —la propina queda FUERA de la base imponible por la DGII— y el
+// envío se queda dentro (Reglamento 293-11 art. 10). Los pedidos del POS y del menú no
+// llevan propina, así que en la práctica el gravable es el total.
+function taxBreakdownLines(order, businessInfo, currency, total) {
+  let base = order.tax_base != null ? parseFloat(order.tax_base) : null
+  let itbis = order.itbis != null ? parseFloat(order.itbis) : null
+
+  if (base == null || itbis == null) {
+    if (!businessInfo || !businessInfo.showTaxBreakdown || !businessInfo.itbisEnabled) return []
+    const taxable = parseFloat(total || 0) - parseFloat(order.tip_amount || 0)
+    if (!(taxable > 0)) return []
+    base = Math.round((taxable / 1.18) * 100) / 100
+    itbis = Math.round((taxable - base) * 100) / 100
+  }
+  if (!(itbis > 0)) return []
+  return [
+    '-'.repeat(32),
+    'Incluye ITBIS 18%',
+    pad('Base imponible:', 16) + pad(`${currency}${formatMoney(base)}`, 16, true),
+    pad('ITBIS (18%):', 16) + pad(`${currency}${formatMoney(itbis)}`, 16, true),
+  ]
+}
+
 function formatMoney(amount) {
   return parseFloat(amount || 0).toFixed(2)
 }
@@ -986,6 +1018,7 @@ async function printPOSReceipt(order, printerName, businessInfo) {
       ...(hasTip ? [pad(tipLabel, 16) + pad(`+${currency}${formatMoney(tip)}`, 16, true)] : []),
     ] : []),
     pad('TOTAL:', 16) + pad(`${currency}${formatMoney(total)}`, 16, true),
+    ...taxBreakdownLines(order, businessInfo, currency, total),
     `Pago: ${payMethod}`,
     ...(showCashLines ? [pad('Recibido:', 16) + pad(`${currency}${formatMoney(cashGiven)}`, 16, true)] : []),
     ...(showCashLines && changeGiven > 0 ? [pad('Cambio:', 16) + pad(`${currency}${formatMoney(changeGiven)}`, 16, true)] : []),
@@ -1043,6 +1076,7 @@ async function printPOSReceipt(order, printerName, businessInfo) {
     if (hasTip) printer.println(pad(tipLabel, 16) + pad(`+${currency}${formatMoney(tip)}`, 16, true))
   }
   printer.println(pad('TOTAL:', 16) + pad(`${currency}${formatMoney(total)}`, 16, true))
+  taxBreakdownLines(order, businessInfo, currency, total).forEach(l => printer.println(l))
   printer.println(`Pago: ${payMethod}`)
   if (showCashLines) {
     printer.println(pad('Recibido:', 16) + pad(`${currency}${formatMoney(cashGiven)}`, 16, true))
@@ -1228,6 +1262,7 @@ async function printDeliveryTicket(order, printerName, businessInfo) {
         ...(deliveryFee > 0 ? [pad('Envio:', 16) + pad(`${currency}${formatMoney(deliveryFee)}`, 16, true)] : []),
       ] : []),
       pad('TOTAL:', 16) + pad(`${currency}${formatMoney(total)}`, 16, true),
+      ...taxBreakdownLines(order, businessInfo, currency, total),
       ...(deliveryAddr ? [DASH, `Dir: ${deliveryAddr}`] : []),
       ...(orderNotes ? [`Nota: ${orderNotes}`] : []),
       LINE,
@@ -1271,6 +1306,7 @@ async function printDeliveryTicket(order, printerName, businessInfo) {
     if (deliveryFee > 0) printer.println(pad('Envio:', 16) + pad(`${currency}${formatMoney(deliveryFee)}`, 16, true))
   }
   printer.println(pad('TOTAL:', 16) + pad(`${currency}${formatMoney(total)}`, 16, true))
+  taxBreakdownLines(order, businessInfo, currency, total).forEach(l => printer.println(l))
   if (deliveryAddr) {
     printer.println(DASH)
     printer.println(`Dir: ${deliveryAddr}`)

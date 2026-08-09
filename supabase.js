@@ -192,7 +192,7 @@ async function fetchBusinessInfo(businessId) {
     const client = getClient()
     const res = await client
       .from('businesses')
-      .select('id, name, currency, rnc, legal_name, address')
+      .select('id, name, currency, rnc, legal_name, address, itbis_enabled, show_tax_breakdown_receipt')
       .eq('id', businessId)
       .single()
     return warnIfEmpty('businesses', res) || {}

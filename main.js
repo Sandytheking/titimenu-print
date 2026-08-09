@@ -290,7 +290,9 @@ async function onNewOrder(type, order) {
     legalName: store.get('businessLegalName', ''),
     rnc: store.get('businessRnc', ''),
     address: store.get('businessAddress', ''),
-    currency: store.get('businessCurrency', 'RD$')
+    currency: store.get('businessCurrency', 'RD$'),
+    itbisEnabled: store.get('businessItbisEnabled', false),
+    showTaxBreakdown: store.get('businessShowTaxBreakdown', false)
   }
   console.log('[business] currency:', businessInfo.currency)
 
@@ -427,6 +429,11 @@ async function handleRequest(req, res) {
         total: data.total,
         tip_amount: data.tip_amount,
         tip_pct: data.tip_pct,
+        // Desglose de ITBIS del recibo, YA calculado por el web. Si no se lista acá NO
+        // llega a la plantilla por muy bien que lo mande el web — es exactamente lo que
+        // pasó con cashier_name y costó tres rondas.
+        tax_base: data.tax_base ?? null,
+        itbis: data.itbis ?? null,
         discount_amount: data.discount_amount,
         discount_pct: data.discount_pct,
         payment_method: data.payment_method,
@@ -443,7 +450,9 @@ async function handleRequest(req, res) {
         legalName: store.get('businessLegalName', ''),
         rnc: store.get('businessRnc', ''),
         address: store.get('businessAddress', ''),
-        currency: data.currency || store.get('businessCurrency', 'RD$')
+        currency: data.currency || store.get('businessCurrency', 'RD$'),
+        itbisEnabled: store.get('businessItbisEnabled', false),
+        showTaxBreakdown: store.get('businessShowTaxBreakdown', false)
       }
       console.log('[business] currency:', businessInfo.currency)
       // Ruteo por order_type: delivery/takeout usan la plantilla que desglosa
@@ -604,6 +613,11 @@ ipcMain.handle('save-config', async (_event, config) => {
   store.set('businessRnc', bizInfo.rnc || '')
   store.set('businessAddress', bizInfo.address || '')
   store.set('businessCurrency', bizInfo.currency || 'RD$')
+  // Flags del desglose de ITBIS del recibo. Hacen falta SOLO para el camino automático
+  // (realtime), donde la plantilla recibe la fila cruda de la BD y no hay payload que
+  // traiga base/ITBIS ya calculados. Por HTTP siempre gana lo que manda el web.
+  store.set('businessItbisEnabled', bizInfo.itbis_enabled === true)
+  store.set('businessShowTaxBreakdown', bizInfo.show_tax_breakdown_receipt === true)
 
   disconnect()
   setCallbacks({ onStatus: onStatusChange, onOrder: onNewOrder, onLogger: sendLog })
