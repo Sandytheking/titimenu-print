@@ -40,6 +40,8 @@ const TEST_PRINTER_NAME = 'TEST_MODE'
 // ─── Test mode: write text to file and show notification ─────────────────────
 
 function writeTestOutput(lines) {
+  // Mismo saneo que el camino real: si el modo test no saneara, el careo mentiría.
+  lines = lines.map(sanitizeForThermal)
   const separator = '\n' + '='.repeat(40) + '\n'
   const timestamp = `[${new Date().toLocaleString('es-DO')}]`
   const content = timestamp + '\n' + lines.join('\n') + '\n'
@@ -147,6 +149,31 @@ function taxBreakdownLines(order, businessInfo, currency, total) {
   ]
 }
 
+// ── Saneo del texto que va a papel ───────────────────────────────────────────
+// Espejo de `sanitizeForThermal` del módulo compartido (titimenu-escpos), para que el
+// ticket del Electron y el de TitiPrint/Bluetooth salgan iguales.
+//
+// El bug: la hora salía "p.ám." / "p.?m.". El formateador de fecha en es-DO mete un espacio
+// que NO es el espacio normal entre "p." y "m." — medido: U+00A0 en la JVM, U+202F en el ICU
+// de Electron 28, y espacio normal en Node 24. Como es una codepage de 8 bits (acá
+// PC858_EURO), U+00A0 se vuelve el byte 0xA0 —que la térmica dibuja como 'á'— y U+202F ni
+// existe, así que sale '?'.
+//
+// Se ataca la CLASE de carácter y no un literal, porque cuál aparece depende de la versión
+// de ICU del runtime: reemplazar solo U+202F se rompería en la próxima actualización.
+const SPECIAL_SPACES = /[\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000]/g
+const INVISIBLES = /[\u200B-\u200D\u2060\uFEFF]/g
+const AM_PM = /\b([ap])\.\s*(m)\./gi
+
+function sanitizeForThermal(text) {
+  if (typeof text !== 'string') return text
+  return text
+    .replace(SPECIAL_SPACES, ' ')
+    .replace(INVISIBLES, '')
+    // "p. m." → "p.m.": como se escribe en RD y ahorra dos caracteres de la línea.
+    .replace(AM_PM, '$1.$2.')
+}
+
 function formatMoney(amount) {
   return parseFloat(amount || 0).toFixed(2)
 }
@@ -185,6 +212,12 @@ async function createPrinter(printerName) {
       console.log('[printer] Setting print speed:', printSpeed)
       p.raw(Buffer.from([0x1D, 0x73, printSpeed]))
     }
+    // Saneo en la FRONTERA: se envuelven los dos métodos que reciben texto, en la única
+    // fábrica de impresoras. Así ninguna de las 7 plantillas tiene que acordarse de sanear
+    // —ni las que se agreguen— y da igual de dónde venga la cadena.
+    const wrap = (fn) => (t, ...rest) => fn.call(p, sanitizeForThermal(t), ...rest)
+    p.println = wrap(p.println)
+    p.print = wrap(p.print)
     return p
   }
 
