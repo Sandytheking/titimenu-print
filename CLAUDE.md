@@ -23,18 +23,37 @@ pago, cambio y RNC — que en un delivery del POS importan más, porque el repar
 en la puerta y el ticket es comprobante fiscal. Todos los bloques son condicionales: una
 venta de mostrador sin `customer_*` imprime exactamente igual que antes.
 
-## 🐞 BUG ABIERTO — `printDeliveryTicket` imprime la dirección del negocio como si fuera del cliente
-**Qué pasa:** `printDeliveryTicket` resuelve la dirección con
-`order.customer_address || order.delivery_address || order.address`. En los payloads del
-web, **`address` es la dirección del NEGOCIO** (va en el encabezado). Así que un pedido sin
-`customer_address` —un **takeout**, o un delivery de texto libre que quedó sin dirección—
-imprime `Dir: <dirección del local>` como si fuera la del cliente. No es cosmético: manda
-al repartidor a la puerta del propio restaurante.
+## ✅ DESCARTADO (2026-08-09) — el `order.address` de `printDeliveryTicket` nunca se disparó
+Estuvo anotado como bug abierto: `printDeliveryTicket` resuelve la dirección con
+`order.customer_address || order.delivery_address || order.address`, y como en los payloads
+del web **`address` es la dirección del NEGOCIO**, se dedujo que un takeout sin
+`customer_address` imprimiría `Dir: <dirección del local>` como si fuera la del cliente.
 
-**Por qué no se arregló todavía:** es la plantilla que se está usando de referencia para el
-careo de tickets entre los dos bridges (v1.2.0). Se corrige en su propio turno, con su
-prueba: quitar el fallback `|| order.address` y verificar que un takeout imprima sin línea
-`Dir:` en vez de con la del local.
+**Verificado en papel por Sandy (Electron, takeout sin dirección): no pasa.** Salen Cliente
+y Teléfono, sin línea `Dir:`, y la dirección del local aparece solo en el membrete. Y el
+código explica por qué — la deducción tenía un eslabón falso:
+
+- **Camino HTTP:** el handler de `/print-receipt` no pasa `data` a la plantilla, construye
+  `order` con un **whitelist explícito** (main.js) que **nunca listó `address`**. Verificado
+  en el historial: la única clave `address:` que existió en main.js es la de `businessInfo`
+  (`store.get('businessAddress')`), jamás una del objeto `order`. O sea que
+  `order.address` siempre fue `undefined` por esta vía: el fallback era inalcanzable desde
+  el primer día, no se arregló en ningún commit.
+- **Camino automático:** la plantilla recibe `payload.new`, la fila cruda de `orders`, donde
+  la dirección del cliente es `customer_address`. El web no escribe ninguna columna
+  `address` ahí (`publicMenu.ts`, `reparto/page.tsx`).
+
+**Ojo con la hipótesis descartada:** no lo arregló el módulo compartido (F0) ni `posReceipt`
+(F2) — son Kotlin, y `printer.js` no se tocó en ninguna de las dos. El fallback **sigue
+literalmente en el código** (`printer.js:1194`, y otro igual en `:660`); lo que nunca
+existió fue el dato que lo activaba.
+
+**Lo que sí hay que cuidar (por lo que esta nota se queda):** el whitelist de main.js es lo
+único que sostiene esto en el camino HTTP. Si alguien alguna vez le pasa el payload del web
+directo a `printDeliveryTicket` —un spread `{...data}`, un atajo para "no repetir el
+mapeo"— el bug aparece de verdad, y manda al repartidor a la puerta del propio restaurante.
+Limpieza pendiente y trivial cuando se toque `printer.js` por otra cosa: borrar
+`|| order.address` de las dos plantillas y quedarse sin la trampa.
 
 `printPOSReceipt` NO copia ese fallback a propósito (ver v1.2.0).
 
