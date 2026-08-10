@@ -68,3 +68,13 @@ Limpieza pendiente y trivial cuando se toque `printer.js` por otra cosa: borrar
    traduce, si no lo reconoce lo imprime TAL CUAL — nunca coacciona un valor real a un default
    (p.ej. método de pago desconocido → NO "Efectivo", eso imprime dinero falso en papel).
    Ver `translatePaymentMethod` en `printer.js`. Así el orden de despliegue deja de importar.
+3. **Un archivo nuevo NO viaja solo: `build.files` de package.json es una lista blanca.**
+   El 1.3.0 se publicó y no arrancaba —`Cannot find module './bridgeAuth'`— porque el módulo
+   nuevo de la credencial de equipo no estaba listado y quedó fuera del `app.asar`. En dev
+   funcionaba (los módulos se cargan del disco), así que el error solo aparece en el
+   instalador. Ya se cambió a `"*.js"` para matar la clase de error, pero la regla de fondo
+   queda: **"BUILD SUCCESSFUL" no prueba que el código viajó.** Antes de publicar, listar el
+   paquete: `npx asar list "dist/mac*/TitiMenu*.app/Contents/Resources/app.asar" | grep .js`.
+   Es la misma familia que el `cashier_name` (whitelist del payload HTTP) y que el submódulo
+   en el checkout de TitiPrint: tres veces un artefacto INSTALADO salió sin algo que sí estaba
+   en el código.
