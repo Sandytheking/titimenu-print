@@ -627,19 +627,62 @@
       <span class="http-badge" id="httpBadge">HTTP —</span>
     </div>
 
+    <!-- Conexión del equipo: login del dueño, una sola vez -->
+    <div class="card" id="bridgeCard">
+      <h3 style="margin:0 0 4px">Conectar este equipo</h3>
+      <p id="bridgeHint" style="margin:0 0 12px;font-size:13px;opacity:.7">
+        Inicia sesión con la cuenta del dueño de TitiMenu. Se usa una sola vez para conectar
+        este equipo; tu contraseña no se guarda.
+      </p>
+
+      <div id="bridgeConnected" style="display:none">
+        <p style="margin:0 0 10px;font-size:14px">
+          ✅ Conectado como <strong id="bridgeBizName"></strong>
+        </p>
+        <button class="btn-secondary" id="bridgeDisconnectBtn">Desconectar este equipo</button>
+      </div>
+
+      <div id="bridgeLoginForm">
+        <div class="field">
+          <label>Correo del dueño</label>
+          <input type="email" id="bridgeEmail" placeholder="tucorreo@ejemplo.com" autocomplete="off" />
+        </div>
+        <div class="field">
+          <label>Contraseña</label>
+          <input type="password" id="bridgePassword" placeholder="Tu contraseña de TitiMenu" />
+        </div>
+        <div class="field" id="bridgeBizPick" style="display:none">
+          <label>¿Cuál negocio es este equipo?</label>
+          <select id="bridgeBizSelect"></select>
+        </div>
+        <button class="btn-primary" id="bridgeLoginBtn">Conectar equipo</button>
+        <p id="bridgeMsg" style="margin:10px 0 0;font-size:13px"></p>
+        <p style="margin:8px 0 0;font-size:12px;opacity:.55">
+          Inicia sesión solo en la computadora del negocio.
+        </p>
+      </div>
+    </div>
+
     <!-- Config Card -->
     <div class="card">
       <form class="form" id="configForm" onsubmit="return false">
-        <div class="field">
-          <label>Business ID</label>
-          <input
-            type="text"
-            id="businessId"
-            placeholder="Pega tu Business ID aquí"
-            autocomplete="off"
-            spellcheck="false"
-          />
-        </div>
+        <details style="margin-bottom:14px">
+          <summary style="cursor:pointer;font-size:13px;opacity:.7">Opciones avanzadas</summary>
+          <div class="field" style="margin-top:10px">
+            <label>Business ID (soporte)</label>
+            <input
+              type="text"
+              id="businessId"
+              placeholder="Solo para soporte"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <p style="margin:6px 0 0;font-size:12px;opacity:.55">
+              Pegar el ID del negocio ya no habilita la impresión automática. Hace falta
+              iniciar sesión una vez para conectar este equipo.
+            </p>
+          </div>
+        </details>
 
         <div class="field">
           <label>Nombre del negocio</label>
@@ -1073,6 +1116,82 @@
     }
 
     init()
+  
+    // ── Conexión del equipo ──────────────────────────────────────────────────
+    // Dos pasos: login (valida y trae los negocios) y registro (contra el elegido). El
+    // selector solo aparece si el dueño tiene más de uno; con uno solo se registra directo.
+    let bridgeBusinesses = []
+
+    async function refreshBridgeCard() {
+      const st = await window.electronAPI.bridgeStatus()
+      document.getElementById('bridgeConnected').style.display = st.connected ? 'block' : 'none'
+      document.getElementById('bridgeLoginForm').style.display = st.connected ? 'none' : 'block'
+      if (st.connected) {
+        document.getElementById('bridgeBizName').textContent = st.business?.name || 'tu negocio'
+      }
+      if (!st.encryption) {
+        document.getElementById('bridgeHint').textContent =
+          'Este sistema no permite guardar la credencial de forma segura, así que habrá que iniciar sesión cada vez que abras la app.'
+      }
+    }
+
+    document.getElementById('bridgeLoginBtn').addEventListener('click', async () => {
+      const btn = document.getElementById('bridgeLoginBtn')
+      const msg = document.getElementById('bridgeMsg')
+      const email = document.getElementById('bridgeEmail').value.trim()
+      const password = document.getElementById('bridgePassword').value
+      const pick = document.getElementById('bridgeBizPick')
+      msg.textContent = ''
+
+      if (!email || !password) { msg.textContent = 'Escribe tu correo y contraseña.'; return }
+      btn.disabled = true
+
+      try {
+        // Si el selector ya está visible, este clic es el paso 2 (registrar).
+        if (pick.style.display !== 'none' && bridgeBusinesses.length) {
+          btn.textContent = 'Conectando…'
+          const bizId = document.getElementById('bridgeBizSelect').value
+          const r = await window.electronAPI.bridgeRegister({ businessId: bizId, deviceName: 'Print Bridge' })
+          if (!r.success) { msg.textContent = r.error; return }
+          document.getElementById('bridgePassword').value = ''
+          await refreshBridgeCard()
+          return
+        }
+
+        btn.textContent = 'Verificando…'
+        const login = await window.electronAPI.bridgeLogin({ email, password })
+        if (!login.success) { msg.textContent = login.error; return }
+        bridgeBusinesses = login.businesses || []
+
+        if (bridgeBusinesses.length === 1) {
+          const r = await window.electronAPI.bridgeRegister({
+            businessId: bridgeBusinesses[0].id, deviceName: 'Print Bridge',
+          })
+          if (!r.success) { msg.textContent = r.error; return }
+          document.getElementById('bridgePassword').value = ''
+          await refreshBridgeCard()
+        } else {
+          // Varios negocios: que elija, sin adivinar por él.
+          const sel = document.getElementById('bridgeBizSelect')
+          sel.innerHTML = bridgeBusinesses.map(b => `<option value="${b.id}">${b.name}</option>`).join('')
+          pick.style.display = 'block'
+          msg.textContent = 'Elige el negocio de este equipo y vuelve a tocar Conectar.'
+        }
+      } catch (e) {
+        msg.textContent = 'No pudimos conectar. Revisa tu internet e intenta otra vez.'
+      } finally {
+        btn.disabled = false
+        btn.textContent = 'Conectar equipo'
+      }
+    })
+
+    document.getElementById('bridgeDisconnectBtn').addEventListener('click', async () => {
+      await window.electronAPI.bridgeDisconnect()
+      await refreshBridgeCard()
+    })
+
+    refreshBridgeCard()
+
   </script>
 </body>
 </html>

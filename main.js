@@ -3,8 +3,9 @@ const { autoUpdater } = require('electron-updater')
 const path = require('path')
 const http = require('http')
 const Store = require('electron-store')
+const bridgeAuth = require('./bridgeAuth')
 const { getUSBPrinters, printPOSReceipt, printFiscalReceipt, printTableComanda, printDeliveryTicket, printKitchenComanda, printBarComanda, printTestPage, printClosingReport, TEST_PRINTER_NAME } = require('./printer')
-const { setCallbacks, startListening, disconnect, fetchBusinessInfo } = require('./supabase')
+const { setCallbacks, startListening, disconnect } = require('./supabase')
 
 const store = new Store()
 
@@ -200,11 +201,8 @@ function updateTray() {
     {
       label: 'Reiniciar conexión',
       click: () => {
-        const businessId = store.get('businessId')
-        if (businessId) {
-          disconnect()
-          setCallbacks({ onStatus: onStatusChange, onOrder: onNewOrder, onLogger: sendLog })
-          startListening(businessId)
+        if (bridgeAuth.hasCredential()) {
+          startAuthenticatedListening()
         } else {
           createConfigWindow()
         }
@@ -261,6 +259,37 @@ function isPrinterActive(name) {
 // rastro en los logs. Desde la migración 20260805 el cajero es COLUMNA de pos_orders, así
 // que la fila del realtime ya lo trae: se lee directo, igual que customer_name. Cero
 // consultas, cero round-trip, cero modo de fallo invisible.
+
+
+// Datos del negocio para las plantillas. Ahora los trae el CANJE de la credencial
+// (/api/bridge/session), no una consulta a `businesses`: el JWT del equipo solo puede leer
+// pos_orders y orders, y así el bridge queda sin una sola lectura extra en la BD.
+function applyBusinessInfo(biz) {
+  if (!biz) return
+  if (biz.name) store.set('businessName', biz.name)
+  store.set('businessLegalName', biz.legal_name || '')
+  store.set('businessRnc', biz.rnc || '')
+  store.set('businessAddress', biz.address || '')
+  store.set('businessCurrency', biz.currency || 'RD$')
+  store.set('businessItbisEnabled', biz.itbis_enabled === true)
+  store.set('businessShowTaxBreakdown', biz.show_tax_breakdown_receipt === true)
+  if (biz.id) store.set('businessId', biz.id)
+}
+
+// Arranca (o rearranca) la escucha con la credencial del equipo. El JWT se pasa como GETTER
+// para que la reconexión tome siempre el vigente y no uno que ya venció.
+async function startAuthenticatedListening() {
+  const jwt = await bridgeAuth.exchange()
+  applyBusinessInfo(bridgeAuth.getBusiness())
+  const businessId = store.get('businessId')
+  if (!businessId) { sendLog('Sin negocio configurado — inicia sesión en la configuración'); return }
+  disconnect()
+  setCallbacks({ onStatus: onStatusChange, onOrder: onNewOrder, onLogger: sendLog })
+  startListening(businessId, () => bridgeAuth.getJwt())
+  if (!jwt) {
+    sendLog('⚠️ Sin conexión con TitiMenu: los recibos que imprimes desde la caja siguen saliendo. Los pedidos del menú digital no se imprimirán solos hasta que vuelva la conexión.')
+  }
+}
 
 async function onNewOrder(type, order) {
   console.log('[printer] printerCaja:', JSON.stringify(store.get('printerCaja')))
@@ -608,21 +637,50 @@ ipcMain.handle('save-config', async (_event, config) => {
   store.set('paperWidth', config.paperWidth || '80mm')
   store.set('printSpeed', parseInt(config.printSpeed) || 1)
 
-  const bizInfo = await fetchBusinessInfo(config.businessId)
-  store.set('businessLegalName', bizInfo.legal_name || '')
-  store.set('businessRnc', bizInfo.rnc || '')
-  store.set('businessAddress', bizInfo.address || '')
-  store.set('businessCurrency', bizInfo.currency || 'RD$')
-  // Flags del desglose de ITBIS del recibo. Hacen falta SOLO para el camino automático
-  // (realtime), donde la plantilla recibe la fila cruda de la BD y no hay payload que
-  // traiga base/ITBIS ya calculados. Por HTTP siempre gana lo que manda el web.
-  store.set('businessItbisEnabled', bizInfo.itbis_enabled === true)
-  store.set('businessShowTaxBreakdown', bizInfo.show_tax_breakdown_receipt === true)
+  // Los datos del negocio ya NO se leen de `businesses`: llegan en el canje de la credencial.
+  // Con credencial, esto reconecta con el JWT del equipo; sin ella, avisa qué falta.
+  if (bridgeAuth.hasCredential()) {
+    await startAuthenticatedListening()
+  } else {
+    sendLog('Configuración guardada. Falta conectar este equipo: inicia sesión con la cuenta del dueño.')
+  }
 
+  return { success: true }
+})
+
+
+// ── Credencial del equipo (login del dueño, una sola vez) ────────────────────
+// Dos pasos separados a propósito: el primero solo valida y trae los negocios (para el
+// selector si tiene más de uno); el segundo registra contra el elegido. Así el usuario ve el
+// selector sin que se haya registrado nada todavía.
+let pendingOwnerSession = null
+
+ipcMain.handle('bridge-login', async (_e, { email, password }) => {
+  const r = await bridgeAuth.signInOwner((email || '').trim(), password || '')
+  if (!r.ok) return { success: false, error: r.error }
+  pendingOwnerSession = { accessToken: r.accessToken, client: r.client }
+  return { success: true, businesses: r.businesses }
+})
+
+ipcMain.handle('bridge-register', async (_e, { businessId, deviceName }) => {
+  if (!pendingOwnerSession) return { success: false, error: 'Vuelve a iniciar sesión.' }
+  const r = await bridgeAuth.registerDevice(pendingOwnerSession, businessId, deviceName)
+  pendingOwnerSession = null            // la sesión del dueño muere acá, pase lo que pase
+  if (!r.ok) return { success: false, error: r.error }
+  applyBusinessInfo(r.business)
+  await startAuthenticatedListening()
+  return { success: true, device: r.device, persisted: r.persisted }
+})
+
+ipcMain.handle('bridge-status', () => ({
+  connected: bridgeAuth.hasCredential(),
+  business: bridgeAuth.getBusiness() || { name: store.get('businessName', '') },
+  encryption: bridgeAuth.encryptionAvailable(),
+}))
+
+ipcMain.handle('bridge-disconnect', () => {
+  bridgeAuth.forgetToken('el dueño desconectó este equipo')
   disconnect()
-  setCallbacks({ onStatus: onStatusChange, onOrder: onNewOrder, onLogger: sendLog })
-  startListening(config.businessId)
-
   return { success: true }
 })
 
@@ -703,11 +761,25 @@ app.whenReady().then(async () => {
   // Always open config window on startup
   createConfigWindow()
 
-  // If there's a saved businessId, also start listening in the background
-  const businessId = store.get('businessId')
-  if (businessId) {
-    setCallbacks({ onStatus: onStatusChange, onOrder: onNewOrder, onLogger: sendLog })
-    startListening(businessId)
+  // Credencial del EQUIPO (Opción B). init antes de cualquier canje: necesita el store y el
+  // logger, y safeStorage solo está disponible con la app lista.
+  bridgeAuth.init({
+    store,
+    logger: sendLog,
+    stateChange: (st) => {
+      if (st.kind === 'needs-login') {
+        sendLog('Este equipo necesita iniciar sesión otra vez para imprimir los pedidos del menú.')
+        createConfigWindow()
+      }
+    },
+  })
+
+  if (bridgeAuth.hasCredential()) {
+    await startAuthenticatedListening()
+  } else if (store.get('businessId')) {
+    // Instalación vieja: tiene el UUID pegado a mano pero no credencial. Se le dice qué
+    // falta en vez de arrancar en silencio por la política abierta (que además va a cerrarse).
+    sendLog('Este equipo todavía no está conectado: inicia sesión con la cuenta del dueño en la configuración.')
   }
 
   await startHttpServer()

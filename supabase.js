@@ -10,6 +10,10 @@ let channels = []
 let heartbeatTimer = null
 let reconnectTimer = null
 let isConnected = false
+// JWT del equipo en uso. La reconexión crea un socket nuevo, que nace SIN identidad: si no
+// se vuelve a imponer, los canales se unen como anon y hoy colarían por la política abierta
+// (mañana, cerrada, no traerían nada). Un getter lo mantiene fresco tras cada renovación.
+let jwtProvider = () => null
 let onStatusChange = null
 let onNewOrder = null
 let onLog = null
@@ -72,13 +76,30 @@ function stopChannels() {
   channels = []
 }
 
-function startListening(businessId) {
+function startListening(businessId, deviceJwt) {
+  // Si llega un getter, se guarda; si llega un string, se envuelve.
+  if (typeof deviceJwt === 'function') jwtProvider = deviceJwt
+  else if (deviceJwt) jwtProvider = () => deviceJwt
   stopChannels()
   clearTimeout(reconnectTimer)
 
   log('Conectando a Supabase...')
 
   const client = getClient()
+
+  // Identidad del EQUIPO, no la anon key: el JWT lleva role=bridge_reader y el business_id
+  // en un claim, y las políticas bridge_read_* resuelven por ese claim. Sin esto el bridge
+  // leería por la política abierta (anon_select_pos_orders, USING true) — el agujero que
+  // este cambio existe para cerrar.
+  //
+  // Va ANTES de suscribir: un canal que se une con el token viejo no se re-autentica solo, y
+  // el modo de fallo es el peor —silencioso—, así que el orden importa.
+  const token = jwtProvider()
+  if (token) {
+    client.realtime.setAuth(token)
+  } else {
+    log('SIN credencial de equipo: los pedidos del menú no se imprimirán solos')
+  }
 
   let subscribedCount = 0
 
@@ -159,9 +180,13 @@ function startListening(businessId) {
   channels = [posChannel, tableChannel]
 }
 
+// OJO: al reconectar hay que volver a imponer el JWT (lo pasa el caller desde bridgeAuth):
+// el socket nuevo nace sin identidad.
 function scheduleReconnect(businessId) {
   clearTimeout(reconnectTimer)
   reconnectTimer = setTimeout(() => {
+    // jwtProvider se consulta de nuevo adentro: si el token se renovó mientras estábamos
+    // caídos, la reconexión entra con el vigente y no con el que expiró.
     startListening(businessId)
   }, 5000)
 }
@@ -187,19 +212,11 @@ function warnIfEmpty(label, { data, error }) {
   return data
 }
 
-async function fetchBusinessInfo(businessId) {
-  try {
-    const client = getClient()
-    const res = await client
-      .from('businesses')
-      .select('id, name, currency, rnc, legal_name, address, itbis_enabled, show_tax_breakdown_receipt')
-      .eq('id', businessId)
-      .single()
-    return warnIfEmpty('businesses', res) || {}
-  } catch (e) {
-    console.warn('[businesses] excepción al leer el negocio:', e.message)
-    return {}
-  }
-}
+// NOTA: aquí vivía fetchBusinessInfo(), que leía `businesses` con la anon key. Se eliminó al
+// pasar a la credencial de equipo: los datos del negocio (nombre, RNC, moneda, flags del
+// desglose) los devuelve el canje en /api/bridge/session, así que el bridge NO consulta
+// ninguna tabla por REST. Su superficie completa es SELECT por realtime sobre pos_orders y
+// orders, y el JWT del equipo no tiene grant para nada más — verificado: products,
+// businesses y bridge_devices responden 403 permission denied.
 
-module.exports = { getClient, setCallbacks, startListening, disconnect, isConnected: () => isConnected, fetchBusinessInfo, warnIfEmpty }
+module.exports = { ANON_KEY: SUPABASE_ANON_KEY, getClient, setCallbacks, startListening, disconnect, isConnected: () => isConnected, warnIfEmpty }
