@@ -14,9 +14,15 @@
       --bg-color: #050507;
       --card-bg: rgba(18, 18, 23, 0.7);
       --card-border: rgba(255, 255, 255, 0.05);
-      --red-accent: #ff3b30;
-      --red-accent-rgb: 255, 59, 48;
-      --red-glow: rgba(255, 59, 48, 0.15);
+      /* Rojo de marca TitiMenu — los tres VERIFICADOS del design system
+         (TitiColors.kt: Brand500 primario, Brand600 hover/pressed, Brand700 profundo).
+         Antes acá vivía #ff3b30, que es el rojo del sistema de Apple: parecido de lejos,
+         pero no es el de la marca. */
+      --red-accent: #f83b3b;
+      --red-accent-rgb: 248, 59, 59;
+      --brand-pressed: #e51d1d;
+      --brand-deep: #c11414;
+      --red-glow: rgba(248, 59, 59, 0.15);
       --text-main: #ffffff;
       --text-muted: #8e8e93;
       --text-dark: #3a3a3c;
@@ -317,6 +323,117 @@
       margin-top: 8px;
     }
 
+
+    /* ── Conectar este equipo ─────────────────────────────────────────────────
+       Misma familia visual que el resto: card oscura translúcida, tipografía display
+       para títulos y el rojo de marca SOLO en la acción principal. */
+    .connect-head {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 6px;
+    }
+
+    .connect-icon {
+      width: 34px;
+      height: 34px;
+      flex-shrink: 0;
+      display: grid;
+      place-items: center;
+      font-size: 17px;
+      border-radius: 10px;
+      background: rgba(var(--red-accent-rgb), 0.12);
+      border: 1px solid rgba(var(--red-accent-rgb), 0.25);
+    }
+
+    .connect-title {
+      font-family: var(--font-display);
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: 0.2px;
+      color: var(--text-main);
+    }
+
+    .connect-sub {
+      font-size: 12.5px;
+      line-height: 1.5;
+      color: var(--text-muted);
+      margin: 0 0 16px 44px;   /* alineado con el texto del encabezado, no con el ícono */
+    }
+
+    /* Acción principal de la pantalla: más alta que un botón normal y con glow de marca,
+       para que se lea como "esto es lo que hay que tocar". */
+    .btn-connect {
+      width: 100%;
+      margin-top: 10px;
+      padding: 15px;
+      font-size: 14.5px;
+      border-radius: 12px;
+      letter-spacing: 0.4px;
+    }
+
+    .btn-connect:hover:not(:disabled) {
+      box-shadow: 0 8px 26px rgba(var(--red-accent-rgb), 0.4);
+    }
+
+    .btn-connect:active:not(:disabled) {
+      background: var(--brand-deep);
+      transform: scale(0.985);
+    }
+
+    /* Estado conectado: pastilla con punto verde, el mismo idioma que el estado de la
+       impresora de arriba. */
+    .connect-status {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 14px;
+      border-radius: 12px;
+      background: rgba(var(--green-accent-rgb), 0.08);
+      border: 1px solid rgba(var(--green-accent-rgb), 0.22);
+      margin-bottom: 12px;
+    }
+
+    .connect-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--green-accent);
+      box-shadow: 0 0 10px var(--green-accent);
+      flex-shrink: 0;
+    }
+
+    .connect-status-text { font-size: 13px; color: rgba(255, 255, 255, 0.9); }
+    .connect-status-text strong { font-family: var(--font-display); font-weight: 700; }
+
+    .connect-note {
+      margin: 12px 0 0;
+      font-size: 11.5px;
+      color: rgba(255, 255, 255, 0.38);
+      text-align: center;
+    }
+
+    .connect-msg { margin: 12px 0 0; font-size: 12.5px; color: var(--red-accent); min-height: 1em; }
+
+    /* Foco en los inputs de esta tarjeta con el rojo de marca (el resto de la pantalla ya
+       usa este patrón). */
+    #bridgeLoginForm input:focus {
+      outline: none;
+      border-color: rgba(var(--red-accent-rgb), 0.5);
+      box-shadow: 0 0 0 3px rgba(var(--red-accent-rgb), 0.12);
+    }
+
+    #bridgeBizSelect {
+      width: 100%;
+      padding: 11px 12px;
+      background: var(--input-bg);
+      border: 1px solid var(--input-border);
+      border-radius: 10px;
+      color: var(--text-main);
+      font-family: var(--font-body);
+      font-size: 13.5px;
+    }
+
     .btn {
       padding: 12px;
       border-radius: 10px;
@@ -344,13 +461,13 @@
     }
 
     .btn-primary {
-      background: linear-gradient(135deg, var(--red-accent) 0%, #d62f26 100%);
+      background: linear-gradient(135deg, var(--red-accent) 0%, var(--brand-pressed) 100%);
       color: #fff;
       box-shadow: 0 4px 15px rgba(var(--red-accent-rgb), 0.25);
     }
 
     .btn-primary:hover:not(:disabled) {
-      background: linear-gradient(135deg, #ff453a 0%, #e53935 100%);
+      background: linear-gradient(135deg, #fb5252 0%, var(--brand-pressed) 100%);
       box-shadow: 0 6px 20px rgba(var(--red-accent-rgb), 0.35);
       transform: translateY(-1px);
     }
@@ -629,17 +746,25 @@
 
     <!-- Conexión del equipo: login del dueño, una sola vez -->
     <div class="card" id="bridgeCard">
-      <h3 style="margin:0 0 4px">Conectar este equipo</h3>
-      <p id="bridgeHint" style="margin:0 0 12px;font-size:13px;opacity:.7">
+      <div class="connect-head">
+        <div class="connect-icon">🔌</div>
+        <div class="connect-title">Conectar este equipo</div>
+      </div>
+      <p class="connect-sub" id="bridgeHint">
         Inicia sesión con la cuenta del dueño de TitiMenu. Se usa una sola vez para conectar
         este equipo; tu contraseña no se guarda.
       </p>
 
       <div id="bridgeConnected" style="display:none">
-        <p style="margin:0 0 10px;font-size:14px">
-          ✅ Conectado como <strong id="bridgeBizName"></strong>
-        </p>
-        <button class="btn-secondary" id="bridgeDisconnectBtn">Desconectar este equipo</button>
+        <div class="connect-status">
+          <span class="connect-dot"></span>
+          <span class="connect-status-text">
+            Conectado a <strong id="bridgeBizName"></strong>
+          </span>
+        </div>
+        <button class="btn btn-secondary" id="bridgeDisconnectBtn" style="width:100%">
+          Desconectar este equipo
+        </button>
       </div>
 
       <div id="bridgeLoginForm">
@@ -655,11 +780,11 @@
           <label>¿Cuál negocio es este equipo?</label>
           <select id="bridgeBizSelect"></select>
         </div>
-        <button class="btn-primary" id="bridgeLoginBtn">Conectar equipo</button>
-        <p id="bridgeMsg" style="margin:10px 0 0;font-size:13px"></p>
-        <p style="margin:8px 0 0;font-size:12px;opacity:.55">
-          Inicia sesión solo en la computadora del negocio.
-        </p>
+        <button class="btn btn-primary btn-connect" id="bridgeLoginBtn">
+          <span id="bridgeBtnLabel">Conectar equipo</span>
+        </button>
+        <p class="connect-msg" id="bridgeMsg"></p>
+        <p class="connect-note">Inicia sesión solo en la computadora del negocio.</p>
       </div>
     </div>
 
@@ -1126,6 +1251,9 @@
       const st = await window.electronAPI.bridgeStatus()
       document.getElementById('bridgeConnected').style.display = st.connected ? 'block' : 'none'
       document.getElementById('bridgeLoginForm').style.display = st.connected ? 'none' : 'block'
+      // La explicación del login no aplica cuando ya está conectado: dejarla ahí hacía que la
+      // tarjeta pidiera iniciar sesión y a la vez dijera que ya lo está.
+      document.getElementById('bridgeHint').style.display = st.connected ? 'none' : 'block'
       if (st.connected) {
         document.getElementById('bridgeBizName').textContent = st.business?.name || 'tu negocio'
       }
@@ -1137,6 +1265,7 @@
 
     document.getElementById('bridgeLoginBtn').addEventListener('click', async () => {
       const btn = document.getElementById('bridgeLoginBtn')
+      const btnLabel = document.getElementById('bridgeBtnLabel')
       const msg = document.getElementById('bridgeMsg')
       const email = document.getElementById('bridgeEmail').value.trim()
       const password = document.getElementById('bridgePassword').value
@@ -1149,7 +1278,7 @@
       try {
         // Si el selector ya está visible, este clic es el paso 2 (registrar).
         if (pick.style.display !== 'none' && bridgeBusinesses.length) {
-          btn.textContent = 'Conectando…'
+          btnLabel.textContent = 'Conectando…'
           const bizId = document.getElementById('bridgeBizSelect').value
           const r = await window.electronAPI.bridgeRegister({ businessId: bizId, deviceName: 'Print Bridge' })
           if (!r.success) { msg.textContent = r.error; return }
@@ -1158,7 +1287,7 @@
           return
         }
 
-        btn.textContent = 'Verificando…'
+        btnLabel.textContent = 'Verificando…'
         const login = await window.electronAPI.bridgeLogin({ email, password })
         if (!login.success) { msg.textContent = login.error; return }
         bridgeBusinesses = login.businesses || []
@@ -1181,7 +1310,7 @@
         msg.textContent = 'No pudimos conectar. Revisa tu internet e intenta otra vez.'
       } finally {
         btn.disabled = false
-        btn.textContent = 'Conectar equipo'
+        btnLabel.textContent = 'Conectar equipo'
       }
     })
 
