@@ -88,6 +88,10 @@ function forgetToken(reason) {
   tokenInMemory = null
   store.delete(KEY_TOKEN)
   store.delete(KEY_DEVICE)
+  // También el businessId: si queda el UUID pegado a mano de una versión anterior, el
+  // arranque intentaría escuchar ese negocio sin credencial y el estado quedaría a medias
+  // entre el config viejo y el nuevo.
+  store.delete('businessId')
   jwt = null
   log(`credencial borrada: ${reason}`)
   onState({ kind: 'needs-login', reason })
@@ -105,10 +109,23 @@ function getJwt() { return jwt }
  */
 async function signInOwner(email, password) {
   const { createClient } = require('@supabase/supabase-js')
+  const ws = require('ws')
   const anon = require('./supabase').ANON_KEY
-  // persistSession:false a propósito: esta sesión no debe sobrevivir al registro.
+  // `transport: ws` es OBLIGATORIO acá: esto corre en el proceso principal de Electron (Node),
+  // donde NO existe el WebSocket global del navegador, y supabase-js construye su
+  // RealtimeClient al crear el cliente — aunque este cliente solo se use para Auth y una
+  // consulta. Sin el transporte, `createClient` revienta en
+  // WebSocketFactory.getWebSocketConstructor y el fallo se ve como "revisa tu internet".
+  // Es la MISMA configuración del cliente de supabase.js (que ya funcionaba); lo que faltó
+  // fue heredarla.
+  //
+  // Y es un cliente APARTE a propósito: iniciar sesión en el cliente de impresión le
+  // cambiaría el token del socket al del dueño, y sus canales pasarían a leer con la
+  // identidad del dueño en vez de la del equipo. persistSession:false porque esta sesión no
+  // debe sobrevivir al registro.
   const client = createClient(SUPABASE_URL, anon, {
     auth: { persistSession: false, autoRefreshToken: false },
+    realtime: { transport: ws },
   })
   const { data, error } = await client.auth.signInWithPassword({ email, password })
   if (error || !data?.session) {
