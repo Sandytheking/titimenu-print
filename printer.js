@@ -515,10 +515,10 @@ function generatePOSReceiptHTML(order, businessInfo, paperWidth) {
   // del POS salía sin nombre ni dirección mientras el del menú digital (que rutea
   // a printDeliveryTicket) sí los imprimía. MISMAS claves que esa plantilla.
   //
-  // OJO: aquí NO se cae a `order.address` como fallback de la dirección. En el
-  // payload del POS `address` es la dirección del NEGOCIO (encabezado): usarla
-  // imprimiría la dirección del local como si fuera la del cliente en TODA venta
-  // de mostrador.
+  // OJO: la dirección del cliente sale SOLO de `customer_address`. NUNCA de `address`,
+  // que en el payload es la dirección del NEGOCIO (encabezado): usarla imprimiría la
+  // dirección del local como si fuera la del cliente. Ese fallback existió en la
+  // plantilla del delivery y se eliminó — no lo reintroduzcas en ninguna.
   const customerName = order.customer_name || order.client_name || null
   const customerPhone = order.customer_phone || order.phone || order.tel || null
   // customer_address = "dirección legible\nhttps://maps...": en papel la URL es
@@ -722,7 +722,6 @@ function generateDeliveryTicketHTML(order, businessInfo, paperWidth) {
   const discountPct = hasDiscount && order.discount_pct ? Number(order.discount_pct) : null
   const discountLabel = discountPct ? `Descuento (${discountPct}%):` : 'Descuento:'
   const total = subtotal - discount + deliveryFee
-  const address = order.delivery_address || order.address || ''
 
   let itemsHtml = items.map(item => {
     const qty = item.quantity || item.qty || 1
@@ -972,10 +971,10 @@ async function printPOSReceipt(order, printerName, businessInfo) {
   // POS salía sin nombre ni dirección mientras el del menú digital (que rutea a
   // printDeliveryTicket) sí los imprimía. MISMAS claves que esa plantilla.
   //
-  // OJO: aquí NO se cae a `order.address` como fallback de la dirección. En el
-  // payload del POS `address` es la dirección del NEGOCIO (encabezado): usarla
-  // imprimiría la dirección del local como si fuera la del cliente en TODA venta
-  // de mostrador.
+  // OJO: la dirección del cliente sale SOLO de `customer_address`. NUNCA de `address`,
+  // que en el payload es la dirección del NEGOCIO (encabezado): usarla imprimiría la
+  // dirección del local como si fuera la del cliente. Ese fallback existió en la
+  // plantilla del delivery y se eliminó — no lo reintroduzcas en ninguna.
   const customerName = order.customer_name || order.client_name || null
   const customerPhone = order.customer_phone || order.phone || order.tel || null
   // customer_address = "dirección legible\nhttps://maps...": en papel la URL es
@@ -1258,7 +1257,7 @@ async function printDeliveryTicket(order, printerName, businessInfo) {
   // (el repartidor navega desde la app), así que imprime solo la parte antes del \n.
   // Se hace aquí (plantilla) para que aplique también al camino AUTOMÁTICO. La térmica
   // envuelve la línea larga sola — no se trunca.
-  const rawAddr = order.customer_address || order.delivery_address || order.address || ''
+  const rawAddr = order.customer_address || order.delivery_address || ''
   const deliveryAddr = String(rawAddr).split('\n')[0].trim()
   const orderNotes = (order.notes || '').toString().trim()
   const items = order.items || order.order_items || []

@@ -49,12 +49,13 @@ código explica por qué — la deducción tenía un eslabón falso:
 literalmente en el código** (`printer.js:1194`, y otro igual en `:660`); lo que nunca
 existió fue el dato que lo activaba.
 
-**Lo que sí hay que cuidar (por lo que esta nota se queda):** el whitelist de main.js es lo
-único que sostiene esto en el camino HTTP. Si alguien alguna vez le pasa el payload del web
-directo a `printDeliveryTicket` —un spread `{...data}`, un atajo para "no repetir el
-mapeo"— el bug aparece de verdad, y manda al repartidor a la puerta del propio restaurante.
-Limpieza pendiente y trivial cuando se toque `printer.js` por otra cosa: borrar
-`|| order.address` de las dos plantillas y quedarse sin la trampa.
+**Limpieza HECHA (2026-08-11):** se borró `|| order.address` de la plantilla ESC/POS del
+delivery y se eliminó la variable `address` muerta de `generateDeliveryTicketHTML` (no se usaba
+en el HTML que genera, y su fallback apuntaba a la dirección del negocio). Ya no queda ni una
+referencia a `order.address` en `printer.js`, así que la trampa no puede despertar ni con un
+`{...data}` que salte el whitelist de main.js. Verificado EJECUTANDO las plantillas: un takeout
+sin dirección no imprime línea `Dir:`, un delivery imprime la del cliente sin la URL de Maps, y
+la del local aparece solo en el membrete (línea 3), nunca como dirección de cliente.
 
 `printPOSReceipt` NO copia ese fallback a propósito (ver v1.2.0).
 
