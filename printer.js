@@ -884,7 +884,7 @@ function generateFiscalReceiptHTML(data, paperWidth) {
       </tbody>
     </table>
     
-    ${(ncfType === 'B02' && data.client_name) ? `
+    ${data.client_name ? `
       <div class="delivery-box" style="margin-top: 10px;">
         <div><span class="bold">Cliente:</span> ${data.client_name}</div>
         ${data.client_rnc ? `<div><span class="bold">RNC:</span> ${data.client_rnc}</div>` : ''}
@@ -1474,7 +1474,7 @@ async function printFiscalReceipt(data, printerName) {
     LINE,
     pad('TOTAL:', 16) + pad(`${currency}${formatMoney(total)}`, 16, true),
     LINE,
-    ...(ncfType === 'B02' && data.client_name ? [
+    ...(data.client_name ? [
       `Cliente: ${data.client_name}`,
       ...(data.client_rnc ? [`RNC: ${data.client_rnc}`] : []),
       LINE
@@ -1527,7 +1527,7 @@ async function printFiscalReceipt(data, printerName) {
   printer.println(LINE)
   printer.println(pad('TOTAL:', 16) + pad(`${currency}${formatMoney(total)}`, 16, true))
   printer.println(LINE)
-  if (ncfType === 'B02' && data.client_name) {
+  if (data.client_name) {
     printer.println(`Cliente: ${data.client_name}`)
     if (data.client_rnc) printer.println(`RNC: ${data.client_rnc}`)
     printer.println(LINE)
