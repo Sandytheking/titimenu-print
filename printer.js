@@ -531,12 +531,16 @@ function generatePOSReceiptHTML(order, businessInfo, paperWidth) {
   const orderNotes = (order.notes || '').toString().trim()
   // Cajero que atendió la venta. Paridad con TitiPrint, que ya lo imprime.
   const cashierName = order.cashier_name || null
-  const posNum = order.order_number || order.id?.slice(-6) || '000'
+  // `!= null` y NO `||`: el cero es falsy en JavaScript, así que un `order_number = 0`
+  // —un número perfectamente válido— caía al fragmento hexadecimal del id y el cliente
+  // recibía "POS #4b5c6d" en vez de "POS #0". Se detectó al poner a un negocio a arrancar
+  // su numeración desde cero. El id sigue como respaldo para cuando de verdad no hay número.
+  const posNum = order.order_number != null ? order.order_number : (order.id?.slice(-6) || '000')
   const displayLabel = order.table_label 
     ? order.table_label 
     : order.table_number 
       ? `Mesa ${order.table_number}` 
-      : order.order_number 
+      : order.order_number != null
         ? `POS #${order.order_number}` 
         : 'POS'
 
@@ -995,7 +999,11 @@ async function printPOSReceipt(order, printerName, businessInfo) {
   const cashGiven = Number(order.cash_given || 0)
   const changeGiven = Number(order.change_amount || 0)
   const showCashLines = rawMethod === 'cash' && cashGiven > 0
-  const posNum = order.order_number || order.id?.slice(-6) || '000'
+  // `!= null` y NO `||`: el cero es falsy en JavaScript, así que un `order_number = 0`
+  // —un número perfectamente válido— caía al fragmento hexadecimal del id y el cliente
+  // recibía "POS #4b5c6d" en vez de "POS #0". Se detectó al poner a un negocio a arrancar
+  // su numeración desde cero. El id sigue como respaldo para cuando de verdad no hay número.
+  const posNum = order.order_number != null ? order.order_number : (order.id?.slice(-6) || '000')
   // Distintivo del encabezado. Con `table_label` (camino HTTP: el web lo manda ya
   // armado) se usa tal cual; el camino AUTOMÁTICO (realtime de pos_orders) NO tiene
   // esa columna, así que el label se arma aquí desde order_type + customer_name —
@@ -1014,7 +1022,7 @@ async function printPOSReceipt(order, printerName, businessInfo) {
       ? typeLabel
       : order.table_number
         ? `Mesa ${order.table_number}`
-        : order.order_number
+        : order.order_number != null
           ? `POS #${order.order_number}`
           : 'POS'
 
