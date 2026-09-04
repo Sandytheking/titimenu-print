@@ -1695,6 +1695,15 @@ async function printClosingReport(data, printerName) {
   const totalSales = parseFloat(data.total_sales || 0)
   const totalCash = parseFloat(data.total_cash || 0)
   const totalCard = parseFloat(data.total_card || 0)
+  // Transferencia (septiembre 2026). Los emisores viejos no mandan la clave y cae a 0,
+  // que aquí es el neutro correcto: la línea solo se imprime si hay monto.
+  const totalTransfer = parseFloat(data.total_transfer || 0)
+  // CIERRE CIEGO: el empleado cuenta el efectivo sin ver cuánto se espera, para que un
+  // faltante no se pueda "ajustar". Quien emite NO manda los montos del turno cuando es
+  // ciego —el control vive en el origen, no en este bridge, que se actualiza por su
+  // cuenta— así que aquí ya llegan en 0. La bandera sirve para no imprimir un arqueo
+  // lleno de ceros en vez de omitir las líneas.
+  const blind = data.blind === true
   const totalOrders = data.total_orders || 0
   const expectedCash = parseFloat(data.expected_cash || 0)
   const closingCash = parseFloat(data.closing_cash || 0)
@@ -1712,15 +1721,21 @@ async function printClosingReport(data, printerName) {
       pad('Apertura:', 16) + pad(openedAt, 16, true),
       pad('Efectivo apertura:', 16) + pad(`${currency}${formatMoney(openingCash)}`, 16, true),
       DASH,
-      pad('Total ventas:', 16) + pad(`${currency}${formatMoney(totalSales)}`, 16, true),
-      pad('  Efectivo:', 16) + pad(`${currency}${formatMoney(totalCash)}`, 16, true),
-      pad('  Tarjeta:', 16) + pad(`${currency}${formatMoney(totalCard)}`, 16, true),
+      // Todo el dinero del turno bajo UNA sola puerta: en un cierre ciego basta con que
+      // una línea de importe se escape para que el control no sirva.
+      ...(blind ? [] : [
+        pad('Total ventas:', 16) + pad(`${currency}${formatMoney(totalSales)}`, 16, true),
+        pad('  Efectivo:', 16) + pad(`${currency}${formatMoney(totalCash)}`, 16, true),
+        pad('  Tarjeta:', 16) + pad(`${currency}${formatMoney(totalCard)}`, 16, true),
+        ...(totalTransfer > 0 ? [pad('  Transferencia:', 16) + pad(`${currency}${formatMoney(totalTransfer)}`, 16, true)] : []),
+      ]),
       pad('  Ordenes:', 16) + pad(String(totalOrders), 16, true),
       DASH,
-      pad('Efectivo esperado:', 16) + pad(`${currency}${formatMoney(expectedCash)}`, 16, true),
+      ...(blind ? [] : [pad('Efectivo esperado:', 16) + pad(`${currency}${formatMoney(expectedCash)}`, 16, true)]),
+      // El contado SÍ sale en el ciego: es lo que el propio empleado acaba de declarar.
       pad('Efectivo contado:', 16) + pad(`${currency}${formatMoney(closingCash)}`, 16, true),
       LINE,
-      pad('Diferencia:', 16) + pad(`${diffSign}${currency}${formatMoney(diff)}`, 16, true),
+      ...(blind ? [] : [pad('Diferencia:', 16) + pad(`${diffSign}${currency}${formatMoney(diff)}`, 16, true)]),
       ...(notes ? [DASH, `Nota: ${notes}`] : []),
       DASH,
       center('Powered by TitiMenu', W),
@@ -1759,19 +1774,30 @@ async function printClosingReport(data, printerName) {
   printer.println(pad('Apertura:', 16) + pad(openedAt, 16, true))
   printer.println(pad('Efectivo apertura:', 16) + pad(`${currency}${formatMoney(openingCash)}`, 16, true))
   printer.println(DASH)
-  printer.bold(true)
-  printer.println(pad('Total ventas:', 16) + pad(`${currency}${formatMoney(totalSales)}`, 16, true))
-  printer.bold(false)
-  printer.println(pad('  Efectivo:', 16) + pad(`${currency}${formatMoney(totalCash)}`, 16, true))
-  printer.println(pad('  Tarjeta:', 16) + pad(`${currency}${formatMoney(totalCard)}`, 16, true))
+  if (!blind) {
+    printer.bold(true)
+    printer.println(pad('Total ventas:', 16) + pad(`${currency}${formatMoney(totalSales)}`, 16, true))
+    printer.bold(false)
+    printer.println(pad('  Efectivo:', 16) + pad(`${currency}${formatMoney(totalCash)}`, 16, true))
+    printer.println(pad('  Tarjeta:', 16) + pad(`${currency}${formatMoney(totalCard)}`, 16, true))
+    // Solo si hubo: un negocio que no cobra por transferencia no ve una línea en cero, y
+    // así el arqueo de los que ya existen no cambia.
+    if (totalTransfer > 0) {
+      printer.println(pad('  Transferencia:', 16) + pad(`${currency}${formatMoney(totalTransfer)}`, 16, true))
+    }
+  }
   printer.println(pad('  Ordenes:', 16) + pad(String(totalOrders), 16, true))
   printer.println(DASH)
-  printer.println(pad('Efectivo esperado:', 16) + pad(`${currency}${formatMoney(expectedCash)}`, 16, true))
+  if (!blind) {
+    printer.println(pad('Efectivo esperado:', 16) + pad(`${currency}${formatMoney(expectedCash)}`, 16, true))
+  }
   printer.println(pad('Efectivo contado:', 16) + pad(`${currency}${formatMoney(closingCash)}`, 16, true))
   printer.println(LINE)
-  printer.bold(true)
-  printer.println(pad('Diferencia:', 16) + pad(`${diffSign}${currency}${formatMoney(diff)}`, 16, true))
-  printer.bold(false)
+  if (!blind) {
+    printer.bold(true)
+    printer.println(pad('Diferencia:', 16) + pad(`${diffSign}${currency}${formatMoney(diff)}`, 16, true))
+    printer.bold(false)
+  }
   if (notes) {
     printer.println(DASH)
     printer.println(`Nota: ${notes}`)
@@ -1811,15 +1837,18 @@ function generateClosingReportHTML(data, bizName, currency) {
   <div class="row"><span>Apertura</span><span>${data.opened_at || ''}</span></div>
   <div class="row"><span>Efectivo apertura</span><span>${currency}${fmt(data.opening_cash)}</span></div>
   <div class="div"></div>
+  ${data.blind === true ? '' : `
   <div class="row b"><span>Total ventas</span><span>${currency}${fmt(data.total_sales)}</span></div>
   <div class="row"><span>  Efectivo</span><span>${currency}${fmt(data.total_cash)}</span></div>
   <div class="row"><span>  Tarjeta</span><span>${currency}${fmt(data.total_card)}</span></div>
+  ${parseFloat(data.total_transfer || 0) > 0 ? `<div class="row"><span>  Transferencia</span><span>${currency}${fmt(data.total_transfer)}</span></div>` : ''}
+  `}
   <div class="row"><span>  Ordenes</span><span>${data.total_orders ?? 0}</span></div>
   <div class="div"></div>
-  <div class="row"><span>Efectivo esperado</span><span>${currency}${fmt(data.expected_cash)}</span></div>
+  ${data.blind === true ? '' : `<div class="row"><span>Efectivo esperado</span><span>${currency}${fmt(data.expected_cash)}</span></div>`}
   <div class="row"><span>Efectivo contado</span><span>${currency}${fmt(data.closing_cash)}</span></div>
   <div class="div2"></div>
-  <div class="row b"><span>Diferencia</span><span>${diffSign}${currency}${fmt(diff)}</span></div>
+  ${data.blind === true ? '' : `<div class="row b"><span>Diferencia</span><span>${diffSign}${currency}${fmt(diff)}</span></div>`}
   ${data.notes ? `<div class="div"></div><div style="font-size:10px">Nota: ${data.notes}</div>` : ''}
   <div class="div"></div>
   <div class="c" style="font-size:10px">Powered by TitiMenu</div>
