@@ -281,6 +281,7 @@ function applyBusinessInfo(biz) {
 async function startAuthenticatedListening() {
   const jwt = await bridgeAuth.exchange()
   applyBusinessInfo(bridgeAuth.getBusiness())
+  businessRefreshedAt = Date.now()   // recién canjeado: el TTL arranca aquí
   const businessId = store.get('businessId')
   if (!businessId) { sendLog('Sin negocio configurado — inicia sesión en la configuración'); return }
   disconnect()
@@ -291,7 +292,32 @@ async function startAuthenticatedListening() {
   }
 }
 
+// Los datos del negocio se leían UNA sola vez —al arrancar, al iniciar sesión o al registrar
+// el equipo— y se quedaban en `store` para siempre. El dueño encendía "desglose de ITBIS" en
+// el dashboard y el bridge seguía imprimiendo sin desglose hasta que alguien lo reiniciara,
+// sin ninguna señal de que estaba usando un dato viejo. Es la misma familia de bug que ya
+// salió cinco veces en el proyecto: responder desde un recuerdo en vez de preguntarle a quien
+// de verdad lo sabe. Mismo remedio que el cache de `print_method` del web: TTL de 10 minutos,
+// perezoso (solo antes de imprimir, así el bridge en reposo no habla con nadie) y que DEGRADA
+// —si el canje falla se sigue con lo último conocido y el ticket sale igual, porque quedarse
+// sin papel por un problema de red sería peor que un desglose desactualizado.
+const BUSINESS_TTL_MS = 10 * 60 * 1000
+let businessRefreshedAt = 0
+
+async function refreshBusinessInfo() {
+  if (Date.now() - businessRefreshedAt < BUSINESS_TTL_MS) return
+  if (!bridgeAuth.hasCredential()) return          // sin credencial no hay a quién preguntarle
+  try {
+    await bridgeAuth.exchange()
+    applyBusinessInfo(bridgeAuth.getBusiness())
+    businessRefreshedAt = Date.now()
+  } catch (e) {
+    sendLog(`No se pudieron refrescar los datos del negocio (se usan los últimos): ${e.message}`)
+  }
+}
+
 async function onNewOrder(type, order) {
+  await refreshBusinessInfo()
   console.log('[printer] printerCaja:', JSON.stringify(store.get('printerCaja')))
   console.log('[printer] printerCocina:', JSON.stringify(store.get('printerCocina')))
   console.log('[printer] printerBar:', JSON.stringify(store.get('printerBar')))

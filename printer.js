@@ -711,6 +711,12 @@ function generateTableComandaHTML(order, businessName, paperWidth, tableInfo = {
 function generateDeliveryTicketHTML(order, businessInfo, paperWidth) {
   const info = typeof businessInfo === 'string' ? { name: businessInfo } : (businessInfo || {})
   const currency = info.currency || store.get('businessCurrency', 'RD$')
+  // Mismo encabezado que el recibo del POS: este papel se va con la comida a casa del
+  // cliente y sin él no dice de qué negocio salió.
+  const bizName = info.name || 'MI NEGOCIO'
+  const legalName = info.legalName || ''
+  const rnc = info.rnc || ''
+  const address = info.address || ''
   const now = new Date()
   const dateStr = now.toLocaleDateString('es-DO', { day: '2-digit', month: '2-digit', year: 'numeric' }) + ' ' + now.toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' })
   const typeLabel = (order.order_type || 'delivery').toUpperCase()
@@ -742,6 +748,10 @@ function generateDeliveryTicketHTML(order, businessInfo, paperWidth) {
 
   const bodyContent = `
     <div class="header center">
+      <div class="business-name">${bizName}</div>
+      ${legalName ? `<div class="business-details">${legalName}</div>` : ''}
+      ${rnc ? `<div class="business-details">RNC: ${rnc}</div>` : ''}
+      ${address ? `<div class="business-details">${address}</div>` : ''}
       <div class="text-large">** ${typeLabel} **</div>
       <div class="business-details" style="margin-top: 4px;">${dateStr}</div>
     </div>
@@ -1143,6 +1153,34 @@ async function printPOSReceipt(order, printerName, businessInfo) {
 
 // ─── Table Comanda ────────────────────────────────────────────────────────────
 
+/**
+ * Los platos de una COMANDA, en un solo lugar para las tres (mesa, cocina, bar).
+ *
+ * Estilo Toast/Square: el cocinero lee este papel de lejos, colgado y con las manos
+ * ocupadas — no es un recibo que alguien se acerca a revisar. Cantidad y nombre a DOBLE
+ * ALTURA en la misma línea, las notas en tamaño normal e indentadas debajo, y una línea en
+ * blanco entre platos para que dos pedidos no se lean como uno.
+ *
+ * `setTextSize(0, 1)`: ancho normal, alto doble. **El ancho NO se toca a propósito** — con
+ * (1,1) la línea pasaría de 32 a 16 caracteres y "2x Sancocho de res" se partiría en dos.
+ * Se vuelve a (0,0) antes de las notas: la impresora es un modo, no un estilo por línea, y
+ * si no se restaura todo lo que sigue —incluido el pie— sale gigante.
+ *
+ * Hoy los modificadores viajan DENTRO de `notes`: no existe campo `modifiers` en el
+ * contrato de ninguno de los dos bridges. Si algún día se agrega, se dibuja aquí y las tres
+ * comandas lo heredan.
+ */
+function printComandaItems(printer, items) {
+  items.forEach((item, idx) => {
+    if (idx > 0) printer.println('')
+    printer.setTextSize(0, 1)
+    printer.println(`${item.quantity || item.qty || 1}x ${item.name || item.product_name || ''}`)
+    printer.setTextSize(0, 0)
+    const notes = item.notes || item.special_instructions
+    if (notes) printer.println(`   * ${notes}`)
+  })
+}
+
 async function printTableComanda(order, printerName, businessInfo, tableInfo = {}) {
   const currency = businessInfo?.currency || store.get('businessCurrency', 'RD$')
   console.log('[printer] Using currency:', currency)
@@ -1205,18 +1243,15 @@ async function printTableComanda(order, printerName, businessInfo, tableInfo = {
 
   if (kitchenItems.length > 0) {
     printer.alignCenter(); printer.println('--- COCINA ---'); printer.alignLeft()
-    kitchenItems.forEach(item => {
-      printer.println(`${item.quantity || item.qty || 1}x ${item.name || item.product_name || ''}`)
-      if (item.notes || item.special_instructions) printer.println(`   * ${item.notes || item.special_instructions}`)
-    })
+    printComandaItems(printer, kitchenItems)
   }
   if (barItems.length > 0) {
     printer.alignCenter(); printer.println('--- BAR ---'); printer.alignLeft()
-    barItems.forEach(item => printer.println(`${item.quantity || item.qty || 1}x ${item.name || item.product_name || ''}`))
+    printComandaItems(printer, barItems)
   }
   if (allItems.length > 0) {
     printer.alignCenter(); printer.println('--- ITEMS ---'); printer.alignLeft()
-    allItems.forEach(item => printer.println(`${item.quantity || item.qty || 1}x ${item.name || item.product_name || ''}`))
+    printComandaItems(printer, allItems)
   }
 
   printer.alignCenter()
@@ -1250,6 +1285,14 @@ async function printDeliveryTicket(order, printerName, businessInfo) {
 
   const info = typeof businessInfo === 'string' ? { name: businessInfo } : (businessInfo || {})
   const currency = cur
+  // Mismos campos y misma precedencia que `printPOSReceipt`. Este ticket arrancaba directo
+  // en "** DELIVERY **": el cliente recibía un papel sin nombre, RNC ni dirección del
+  // negocio — imposible saber quién se lo mandó, y el único documento que acompaña la
+  // comida a la casa del cliente. El recibo del POS sí lo dibujaba desde siempre.
+  const bizName = info.name || 'MI NEGOCIO'
+  const legalName = info.legalName || ''
+  const rnc = info.rnc || ''
+  const address = info.address || ''
 
   const LINE = '================================'
   const DASH = '--------------------------------'
@@ -1283,6 +1326,10 @@ async function printDeliveryTicket(order, printerName, businessInfo) {
   if (isTestMode(printerName)) {
     const lines = [
       LINE,
+      center(bizName, W),
+      ...(legalName ? [center(legalName, W)] : []),
+      ...(rnc ? [center(`RNC: ${rnc}`, W)] : []),
+      ...(address ? [center(address, W)] : []),
       center(`** ${typeLabel} **`),
       center(dateStr),
       LINE,
@@ -1324,6 +1371,10 @@ async function printDeliveryTicket(order, printerName, businessInfo) {
 
   printer.alignCenter()
   printer.println(LINE)
+  printer.println(center(bizName, W))
+  if (legalName) printer.println(center(legalName, W))
+  if (rnc) printer.println(center(`RNC: ${rnc}`, W))
+  if (address) printer.println(center(address, W))
   printer.bold(true)
   printer.println(center(`** ${typeLabel} **`))
   printer.bold(false)
@@ -1610,10 +1661,7 @@ async function printStationComanda(stationTitle, items, printerName, orderInfo, 
   printer.println(LINE)
   printer.alignLeft()
 
-  items.forEach(item => {
-    printer.println(`${item.quantity || item.qty || 1}x ${item.name || item.product_name || ''}`)
-    if (item.notes || item.special_instructions) printer.println(`   * ${item.notes || item.special_instructions}`)
-  })
+  printComandaItems(printer, items)
 
   printer.alignCenter()
   printer.println(LINE)
