@@ -647,8 +647,11 @@ function generateTableComandaHTML(order, businessName, paperWidth, tableInfo = {
   const tableLabel = tableInfo?.table_label || order.table_label || tableInfo?.table_number || order.table_number || order.table_id || '?'
   const shortId = (tableInfo?.order_id || order.id || '000000').slice(-6).toUpperCase()
   const items = order.items || order.order_items || []
-  const kitchenItems = items.filter(i => !i.bar && i.category !== 'bar' && i.station !== 'bar')
-  const barItems = items.filter(i => i.bar || i.category === 'bar' || i.station === 'bar')
+  // `isDrink` es el MISMO criterio que usa main.js para elegir impresora. Antes filtraba
+  // por i.bar/i.category/i.station —ninguno existe en los ítems reales— así que barItems
+  // salía vacío siempre y los tragos se imprimían como comida.
+  const kitchenItems = items.filter(i => !isDrink(i))
+  const barItems = items.filter(isDrink)
   const allItems = kitchenItems.length === 0 && barItems.length === 0 ? items : []
 
   function renderItemsList(itemList) {
@@ -692,6 +695,7 @@ function generateTableComandaHTML(order, businessName, paperWidth, tableInfo = {
       <div class="business-details" style="margin-top: 4px;">${dateStr}</div>
     </div>
     
+    ${noteHtml(order.notes)}
     <div class="divider"></div>
     
     <div>
@@ -1154,6 +1158,27 @@ async function printPOSReceipt(order, printerName, businessInfo) {
 // ─── Table Comanda ────────────────────────────────────────────────────────────
 
 /**
+ * ¿Este renglón va al BAR? **Único criterio de estación en todo el bridge.**
+ *
+ * La misma pregunta se contestaba en tres sitios con tres vocabularios distintos, y solo
+ * uno coincidía con los datos: `main.js` usaba `product_type === 'drink'` (correcto),
+ * `printTableComanda` filtraba por `i.bar || i.category === 'bar' || i.station === 'bar'`
+ * —tres campos que NO existen en los ítems— y el difunto `/print-comanda` comparaba contra
+ * `'bar'`, un valor que nunca se escribe. Resultado en producción: cinco tragos (Santo
+ * Libre, Cuba Libre, Tom Collins, jugo y cerveza) impresos bajo "--- COCINA ---" en el
+ * mismo ticket que las hamburguesas, y la sección "--- BAR ---" que no podía aparecer
+ * jamás. Verificado contra la BD: `product_type` solo toma 'food' (1110) y 'drink' (303).
+ *
+ * El `?? 'food'` importa: un producto en "auto" se guarda como NULL y el web lo colapsa a
+ * comida en todos sus consumidores (`station/page.tsx`, `orders`, `delivery`). Aquí se hace
+ * igual — si el papel y la pantalla clasificaran distinto, el cocinero y el mesero verían
+ * cosas diferentes del mismo pedido.
+ */
+function isDrink(item) {
+  return (item?.product_type ?? 'food') === 'drink'
+}
+
+/**
  * Los platos de una COMANDA, en un solo lugar para las tres (mesa, cocina, bar).
  *
  * Estilo Toast/Square: el cocinero lee este papel de lejos, colgado y con las manos
@@ -1170,6 +1195,47 @@ async function printPOSReceipt(order, printerName, businessInfo) {
  * contrato de ninguno de los dos bridges. Si algún día se agrega, se dibuja aquí y las tres
  * comandas lo heredan.
  */
+/**
+ * La NOTA DEL PEDIDO en una comanda ("sin cebolla", "bien cocido").
+ *
+ * Es la nota que escribe el cliente en el menú público (`orders.notes`, y `p_notes` en
+ * `place_table_order`) y NINGUNA comanda la imprimía — ese era el "las notas no salen" que
+ * reportó Sandy. Las comandas leían `item.notes`/`item.special_instructions`, campos que el
+ * web no escribe nunca: **las notas POR ÍTEM no existen en el modelo de datos**, así que ahí
+ * no había nada que arreglar (sería una feature nueva, no un bug).
+ *
+ * Va ARRIBA, antes de los platos, no al final: el cocinero lee de arriba abajo y empieza a
+ * preparar mientras lee. Una nota después de los renglones se descubre con la comida ya
+ * hecha, que es justo cuando ya no sirve de nada.
+ *
+ * En la rama separada (cocina y bar en impresoras distintas) sale en las DOS comandas: la
+ * nota es del pedido completo, no de una estación, y el barman también puede necesitarla.
+ */
+// La misma nota, para el camino de impresora de SISTEMA (HTML).
+function noteHtml(notes) {
+  const text = (notes || '').toString().trim()
+  if (!text) return ''
+  return `<div class="divider"></div><div class="center" style="font-weight:700">*** NOTA DEL PEDIDO ***</div><div>${text}</div>`
+}
+
+// La misma nota, para los volcados de TEST_MODE (texto plano, sin ESC/POS).
+function noteLines(notes) {
+  const text = (notes || '').toString().trim()
+  return text ? ['*** NOTA DEL PEDIDO ***', text, ''] : []
+}
+
+function printComandaNote(printer, notes) {
+  const text = (notes || '').toString().trim()
+  if (!text) return
+  printer.alignCenter()
+  printer.bold(true)
+  printer.println('*** NOTA DEL PEDIDO ***')
+  printer.bold(false)
+  printer.alignLeft()
+  printer.println(text)          // la térmica envuelve sola; no se trunca
+  printer.println('')
+}
+
 function printComandaItems(printer, items) {
   items.forEach((item, idx) => {
     if (idx > 0) printer.println('')
@@ -1200,8 +1266,11 @@ async function printTableComanda(order, printerName, businessInfo, tableInfo = {
   const tableLabel = tableInfo?.table_label || order.table_label || tableInfo?.table_number || order.table_number || order.table_id || '?'
   const shortId = (tableInfo?.order_id || order.id || '000000').slice(-6).toUpperCase()
   const items = order.items || order.order_items || []
-  const kitchenItems = items.filter(i => !i.bar && i.category !== 'bar' && i.station !== 'bar')
-  const barItems = items.filter(i => i.bar || i.category === 'bar' || i.station === 'bar')
+  // `isDrink` es el MISMO criterio que usa main.js para elegir impresora. Antes filtraba
+  // por i.bar/i.category/i.station —ninguno existe en los ítems reales— así que barItems
+  // salía vacío siempre y los tragos se imprimían como comida.
+  const kitchenItems = items.filter(i => !isDrink(i))
+  const barItems = items.filter(isDrink)
   const allItems = kitchenItems.length === 0 && barItems.length === 0 ? items : []
 
   if (isTestMode(printerName)) {
@@ -1210,6 +1279,7 @@ async function printTableComanda(order, printerName, businessInfo, tableInfo = {
       center(`** COMANDA - ${formatTableLabel(tableLabel)} **`),
       center(dateStr),
       LINE,
+      ...(noteLines(order.notes)),
       ...(kitchenItems.length > 0 ? ['--- COCINA ---', ...kitchenItems.map(i => `${i.quantity || i.qty || 1}x ${i.name || i.product_name || ''}`)] : []),
       ...(barItems.length > 0 ? ['--- BAR ---', ...barItems.map(i => `${i.quantity || i.qty || 1}x ${i.name || i.product_name || ''}`)] : []),
       ...(allItems.length > 0 ? ['--- ITEMS ---', ...allItems.map(i => `${i.quantity || i.qty || 1}x ${i.name || i.product_name || ''}`)] : []),
@@ -1240,6 +1310,8 @@ async function printTableComanda(order, printerName, businessInfo, tableInfo = {
   printer.println(center(dateStr))
   printer.println(LINE)
   printer.alignLeft()
+
+  printComandaNote(printer, order.notes)
 
   if (kitchenItems.length > 0) {
     printer.alignCenter(); printer.println('--- COCINA ---'); printer.alignLeft()
@@ -1632,6 +1704,7 @@ async function printStationComanda(stationTitle, items, printerName, orderInfo, 
       center(`** ${stationTitle} - ${formatTableLabel(tableLabel)} **`),
       center(dateStr),
       LINE,
+      ...(noteLines(orderInfo?.notes)),
       ...items.map(i => `${i.quantity || i.qty || 1}x ${i.name || i.product_name || ''}` + (i.notes ? `\n   * ${i.notes}` : '')),
       LINE,
       center(`Orden #${shortId}`),
@@ -1661,6 +1734,7 @@ async function printStationComanda(stationTitle, items, printerName, orderInfo, 
   printer.println(LINE)
   printer.alignLeft()
 
+  printComandaNote(printer, orderInfo?.notes)
   printComandaItems(printer, items)
 
   printer.alignCenter()
@@ -1702,6 +1776,7 @@ function generateStationComandaHTML(stationTitle, items, orderInfo, paperWidth, 
       <div class="business-details" style="margin-top: 4px;">${dateStr}</div>
     </div>
     
+    ${noteHtml(orderInfo?.notes)}
     <div class="divider"></div>
     
     <div>
@@ -1905,6 +1980,7 @@ function generateClosingReportHTML(data, bizName, currency) {
 
 module.exports = {
   getUSBPrinters,
+  isDrink,
   printPOSReceipt,
   printFiscalReceipt,
   printTableComanda,

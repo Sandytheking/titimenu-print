@@ -4,7 +4,7 @@ const path = require('path')
 const http = require('http')
 const Store = require('electron-store')
 const bridgeAuth = require('./bridgeAuth')
-const { getUSBPrinters, printPOSReceipt, printFiscalReceipt, printTableComanda, printDeliveryTicket, printKitchenComanda, printBarComanda, printTestPage, printClosingReport, TEST_PRINTER_NAME } = require('./printer')
+const { getUSBPrinters, isDrink, printPOSReceipt, printFiscalReceipt, printTableComanda, printDeliveryTicket, printKitchenComanda, printBarComanda, printTestPage, printClosingReport, TEST_PRINTER_NAME } = require('./printer')
 const { setCallbacks, startListening, disconnect } = require('./supabase')
 
 const store = new Store()
@@ -337,8 +337,11 @@ async function onNewOrder(type, order) {
   }
 
   const items = order.items || order.order_items || []
-  const foodItems = items.filter(item => item.product_type !== 'drink')
-  const drinkItems = items.filter(item => item.product_type === 'drink')
+  // `isDrink` viene de printer.js y es el ÚNICO criterio de estación del bridge: el mismo
+  // que usa printTableComanda para dibujar las secciones. Tenerlo escrito aquí también fue
+  // lo que permitió que las dos respuestas divergieran sin que nadie lo notara.
+  const foodItems = items.filter(i => !isDrink(i))
+  const drinkItems = items.filter(isDrink)
 
   const businessInfo = {
     name: businessName,
@@ -562,38 +565,15 @@ async function handleRequest(req, res) {
       return
     }
 
-    if (req.method === 'POST' && urlPath === '/print-comanda') {
-      const data = await parseBody(req)
-      const legacyPrinter = store.get('printerName', '')
-      const printerCocina = store.has('printerCocina') ? store.get('printerCocina') : legacyPrinter
-      const printerName = data.target_printer || printerCocina
-      if (!isPrinterActive(printerName)) {
-        res.writeHead(503, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ error: 'No hay impresora activa configurada para comanda' }))
-        return
-      }
-      const order = {
-        table_label: data.table_label,
-        id: String(data.order_number || ''),
-        items: (data.items || []).map(i => ({ name: i.name, qty: i.qty, bar: i.product_type === 'bar' })),
-        created_at: data.date
-      }
-      const businessInfo = {
-        name: store.get('businessName', 'Mi Negocio'),
-        currency: store.get('businessCurrency', 'RD$')
-      }
-      console.log('[business] currency:', businessInfo.currency)
-      const tableInfo = {
-        table_number: data.table_number || '',
-        table_label: data.table_label || (data.table_number ? `Mesa ${data.table_number}` : ''),
-        order_id: String(data.order_number || '')
-      }
-      await printTableComanda(order, printerName, businessInfo, tableInfo)
-      sendLog(`HTTP: Comanda impresa — Mesa ${data.table_label}`)
-      res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ success: true }))
-      return
-    }
+    // Aquí vivía POST /print-comanda. Se eliminó en la 1.3.5: no tenía UN SOLO llamador
+    // —verificado en el web completo, en la app nativa, en TitiPrint y en este mismo repo—
+    // y arrastraba dos defectos que solo habrían aparecido el día que alguien lo usara:
+    // clasificaba con `product_type === 'bar'` (el valor real es 'drink', así que ningún
+    // trago calificaba nunca) y mandaba SIEMPRE a la impresora de cocina, sin poder llegar
+    // jamás al bar. Un endpoint muerto con la lógica podrida no es código inofensivo: es la
+    // trampa que muerde a quien lo estrene confiando en que funciona. Si algún día hace
+    // falta imprimir una comanda por HTTP, se escribe de nuevo usando `isDrink` y las tres
+    // impresoras, que es como lo hace hoy el camino de realtime.
 
     res.writeHead(404, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({ error: 'Not found' }))
