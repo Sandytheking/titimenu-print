@@ -432,6 +432,126 @@ function parseBody(req) {
   })
 }
 
+// ─── Trabajos de impresión: UN solo sitio para los tres documentos ────────────
+// Lo llaman los DOS transportes: el servidor HTTP (POS en el navegador, vía la
+// extensión de Chrome) y el IPC de la ventana del POS (app de escritorio).
+//
+// POR QUÉ ESTÁ FACTORIZADO Y NO COPIADO: aquí vive el whitelist explícito del payload
+// —lo que no se liste NO llega a la plantilla por muy bien que lo mande el web—, y una
+// segunda copia divergiría en silencio. Ya pasó con `cashier_name`: el web lo mandaba,
+// el mapeo no lo listaba, y el "Cajero/a" no salía en el papel. No falla: DEGRADA. Dos
+// copias significan que el papel del POS envuelto y el del navegador podrían traer
+// campos distintos sin que nada se ponga en rojo.
+
+/** Error de impresión que sabe con qué código HTTP debe contestar el servidor. */
+class PrintJobError extends Error {
+  constructor(message, httpStatus) {
+    super(message)
+    this.name = 'PrintJobError'
+    this.httpStatus = httpStatus
+  }
+}
+
+/** Impresora de caja configurada, o revienta con el 503 de siempre. */
+function activeCashierPrinter() {
+  const legacyPrinter = store.get('printerName', '')
+  const printerCaja = store.has('printerCaja') ? store.get('printerCaja') : legacyPrinter
+  if (!isPrinterActive(printerCaja)) {
+    throw new PrintJobError('No hay impresora de caja activa configurada', 503)
+  }
+  return printerCaja
+}
+
+/**
+ * Imprime uno de los tres documentos.
+ * @param {'print-receipt'|'print-fiscal'|'print-closing'} endpoint
+ * @param {object} data payload tal como lo manda el web
+ * @returns {Promise<string>} resumen para el log (el caller le pone el prefijo del
+ *          transporte: "HTTP: …" o "POS: …")
+ */
+async function handlePrintJob(endpoint, data) {
+  const printerCaja = activeCashierPrinter()
+
+  if (endpoint === 'print-receipt') {
+    const order = {
+      order_number: data.order_number,
+      table_label: data.table_label || null,
+      table_number: data.table_number || null,
+      order_type: data.order_type || null,
+      // Campos del cliente para el ticket de delivery/takeout (la plantilla los
+      // imprime como Cliente/Tel/Dir/Nota). Nombres idénticos a la BD/camino automático.
+      customer_name: data.customer_name || null,
+      customer_phone: data.customer_phone || null,
+      customer_address: data.customer_address || null,
+      // El whitelist de este mapeo es explícito: lo que no se liste NO llega a la
+      // plantilla por muy bien que lo mande el web. cashier_name faltaba, y por eso
+      // el "Cajero/a" no salía aunque el payload lo traía.
+      cashier_name: data.cashier_name || null,
+      notes: data.notes || null,
+      delivery_fee: data.delivery_fee || null,
+      items: (data.items || []).map(i => ({ name: i.name, qty: i.qty, price: i.price, subtotal: i.subtotal })),
+      subtotal: data.subtotal,
+      total: data.total,
+      tip_amount: data.tip_amount,
+      tip_pct: data.tip_pct,
+      // Desglose de ITBIS del recibo, YA calculado por el web. Si no se lista acá NO
+      // llega a la plantilla por muy bien que lo mande el web — es exactamente lo que
+      // pasó con cashier_name y costó tres rondas.
+      tax_base: data.tax_base ?? null,
+      itbis: data.itbis ?? null,
+      discount_amount: data.discount_amount,
+      discount_pct: data.discount_pct,
+      payment_method: data.payment_method,
+      // Recibido/Cambio: el ticket los muestra en cobros en efectivo (transparencia
+      // del cobro en la puerta). En el camino automático son columnas de pos_orders;
+      // aquí hay que listarlos o no llegan a la plantilla.
+      cash_given: data.cash_given ?? null,
+      card_amount: data.card_amount ?? null,
+      change_amount: data.change_amount ?? null,
+      created_at: data.date
+    }
+    const businessInfo = {
+      name: data.business_name || store.get('businessName', 'Mi Negocio'),
+      legalName: store.get('businessLegalName', ''),
+      rnc: store.get('businessRnc', ''),
+      address: store.get('businessAddress', ''),
+      currency: data.currency || store.get('businessCurrency', 'RD$'),
+      itbisEnabled: store.get('businessItbisEnabled', false),
+      showTaxBreakdown: store.get('businessShowTaxBreakdown', false)
+    }
+    console.log('[business] currency:', businessInfo.currency)
+    // Ruteo por order_type: delivery/takeout usan la plantilla que desglosa
+    // Subtotal + Envío + TOTAL; el resto (pos/mesa) sigue con el recibo POS.
+    if (data.order_type === 'delivery' || data.order_type === 'takeout') {
+      await printDeliveryTicket(order, printerCaja, businessInfo)
+    } else {
+      await printPOSReceipt(order, printerCaja, businessInfo)
+    }
+    return `Recibo impreso — Orden #${data.order_number}`
+  }
+
+  if (endpoint === 'print-fiscal') {
+    data.currency = data.currency || store.get('businessCurrency', 'RD$')
+    console.log('[business] currency:', data.currency)
+    await printFiscalReceipt(data, printerCaja)
+    return `Comprobante fiscal impreso — ${data.ncf || ''}`
+  }
+
+  if (endpoint === 'print-closing') {
+    data.business_name = data.business_name || store.get('businessName', 'Mi Negocio')
+    data.currency = data.currency || store.get('businessCurrency', 'RD$')
+    console.log('[business] currency:', data.currency)
+    await printClosingReport(data, printerCaja)
+    return `Cierre de caja impreso — ${data.closing_id || data.closed_at || ''}`
+  }
+
+  // Inalcanzable por los dos transportes (ambos filtran contra la misma lista antes
+  // de llegar aquí), pero un tercero futuro no puede colarse por defecto.
+  throw new PrintJobError(`endpoint de impresión desconocido: ${endpoint}`, 404)
+}
+
+const PRINT_JOB_PATHS = new Set(['/print-receipt', '/print-fiscal', '/print-closing'])
+
 async function handleRequest(req, res) {
   setCorsHeaders(res)
 
@@ -456,112 +576,22 @@ async function handleRequest(req, res) {
       return
     }
 
-    if (req.method === 'POST' && urlPath === '/print-receipt') {
-      console.log('[HTTP] POST /print-receipt recibido')
+    // Los tres documentos comparten handler: sólo cambian el parseo del cuerpo y los
+    // códigos de respuesta. QUÉ se imprime y con qué campos vive en `handlePrintJob`,
+    // que es la misma función que usa el IPC de la ventana del POS.
+    if (req.method === 'POST' && PRINT_JOB_PATHS.has(urlPath)) {
+      console.log(`[HTTP] POST ${urlPath} recibido`)
       const data = await parseBody(req)
-      const legacyPrinter = store.get('printerName', '')
-      const printerCaja = store.has('printerCaja') ? store.get('printerCaja') : legacyPrinter
-      if (!isPrinterActive(printerCaja)) {
-        res.writeHead(503, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ error: 'No hay impresora de caja activa configurada' }))
-        return
+      try {
+        const summary = await handlePrintJob(urlPath.slice(1), data)
+        sendLog(`HTTP: ${summary}`)
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ success: true }))
+      } catch (err) {
+        // 503 sin impresora de caja, como siempre; el resto, 500.
+        res.writeHead(err.httpStatus || 500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: err.message }))
       }
-      const order = {
-        order_number: data.order_number,
-        table_label: data.table_label || null,
-        table_number: data.table_number || null,
-        order_type: data.order_type || null,
-        // Campos del cliente para el ticket de delivery/takeout (la plantilla los
-        // imprime como Cliente/Tel/Dir/Nota). Nombres idénticos a la BD/camino automático.
-        customer_name: data.customer_name || null,
-        customer_phone: data.customer_phone || null,
-        customer_address: data.customer_address || null,
-        // El whitelist de este mapeo es explícito: lo que no se liste NO llega a la
-        // plantilla por muy bien que lo mande el web. cashier_name faltaba, y por eso
-        // el "Cajero/a" no salía aunque el payload lo traía.
-        cashier_name: data.cashier_name || null,
-        notes: data.notes || null,
-        delivery_fee: data.delivery_fee || null,
-        items: (data.items || []).map(i => ({ name: i.name, qty: i.qty, price: i.price, subtotal: i.subtotal })),
-        subtotal: data.subtotal,
-        total: data.total,
-        tip_amount: data.tip_amount,
-        tip_pct: data.tip_pct,
-        // Desglose de ITBIS del recibo, YA calculado por el web. Si no se lista acá NO
-        // llega a la plantilla por muy bien que lo mande el web — es exactamente lo que
-        // pasó con cashier_name y costó tres rondas.
-        tax_base: data.tax_base ?? null,
-        itbis: data.itbis ?? null,
-        discount_amount: data.discount_amount,
-        discount_pct: data.discount_pct,
-        payment_method: data.payment_method,
-        // Recibido/Cambio: el ticket los muestra en cobros en efectivo (transparencia
-        // del cobro en la puerta). En el camino automático son columnas de pos_orders;
-        // aquí hay que listarlos o no llegan a la plantilla.
-        cash_given: data.cash_given ?? null,
-        card_amount: data.card_amount ?? null,
-        change_amount: data.change_amount ?? null,
-        created_at: data.date
-      }
-      const businessInfo = {
-        name: data.business_name || store.get('businessName', 'Mi Negocio'),
-        legalName: store.get('businessLegalName', ''),
-        rnc: store.get('businessRnc', ''),
-        address: store.get('businessAddress', ''),
-        currency: data.currency || store.get('businessCurrency', 'RD$'),
-        itbisEnabled: store.get('businessItbisEnabled', false),
-        showTaxBreakdown: store.get('businessShowTaxBreakdown', false)
-      }
-      console.log('[business] currency:', businessInfo.currency)
-      // Ruteo por order_type: delivery/takeout usan la plantilla que desglosa
-      // Subtotal + Envío + TOTAL; el resto (pos/mesa) sigue con el recibo POS.
-      if (data.order_type === 'delivery' || data.order_type === 'takeout') {
-        await printDeliveryTicket(order, printerCaja, businessInfo)
-      } else {
-        await printPOSReceipt(order, printerCaja, businessInfo)
-      }
-      sendLog(`HTTP: Recibo impreso — Orden #${data.order_number}`)
-      res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ success: true }))
-      return
-    }
-
-    if (req.method === 'POST' && urlPath === '/print-fiscal') {
-      console.log('[HTTP] POST /print-fiscal recibido')
-      const data = await parseBody(req)
-      const legacyPrinter = store.get('printerName', '')
-      const printerCaja = store.has('printerCaja') ? store.get('printerCaja') : legacyPrinter
-      if (!isPrinterActive(printerCaja)) {
-        res.writeHead(503, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ error: 'No hay impresora de caja activa configurada' }))
-        return
-      }
-      data.currency = data.currency || store.get('businessCurrency', 'RD$')
-      console.log('[business] currency:', data.currency)
-      await printFiscalReceipt(data, printerCaja)
-      sendLog(`HTTP: Comprobante fiscal impreso — ${data.ncf || ''}`)
-      res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ success: true }))
-      return
-    }
-
-    if (req.method === 'POST' && urlPath === '/print-closing') {
-      console.log('[HTTP] POST /print-closing recibido')
-      const data = await parseBody(req)
-      const legacyPrinter = store.get('printerName', '')
-      const printerCaja = store.has('printerCaja') ? store.get('printerCaja') : legacyPrinter
-      if (!isPrinterActive(printerCaja)) {
-        res.writeHead(503, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ error: 'No hay impresora de caja activa configurada' }))
-        return
-      }
-      data.business_name = data.business_name || store.get('businessName', 'Mi Negocio')
-      data.currency = data.currency || store.get('businessCurrency', 'RD$')
-      console.log('[business] currency:', data.currency)
-      await printClosingReport(data, printerCaja)
-      sendLog(`HTTP: Cierre de caja impreso — ${data.closing_id || data.closed_at || ''}`)
-      res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ success: true }))
       return
     }
 
@@ -818,8 +848,8 @@ ipcMain.handle('pos:print-job', async (event, args) => {
     // MISMA función que usa el servidor HTTP — el whitelist del payload, el
     // businessInfo y el ruteo por order_type viven en un solo sitio (pieza 3). Dos
     // copias del mapeo divergirían en silencio, que es el bug de `cashier_name`.
-    await handlePrintJob(endpoint, payload)
-    sendLog(`POS: ${endpoint} impreso`)
+    const summary = await handlePrintJob(endpoint, payload)
+    sendLog(`POS: ${summary}`)
     return { ok: true }
   } catch (err) {
     console.error(`[pos-ipc] fallo al imprimir ${endpoint}:`, err.message)
