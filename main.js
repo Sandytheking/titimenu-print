@@ -754,6 +754,79 @@ ipcMain.on('quit-and-install', () => {
   handleQuitAndInstall()
 })
 
+// ─── IPC de la ventana del POS ────────────────────────────────────────────────
+// Estos DOS canales son lo único que ve el POS (ver `preload-pos.js`). Los demás
+// canales del main —bridge-login, save-config, reset-config…— no le llegan porque el
+// preload no expone `ipcRenderer`, sólo dos funciones.
+//
+// Aquí van las comprobaciones que de verdad cuentan. Las del preload son para fallar
+// rápido; un renderer comprometido se las salta. Estas no.
+
+const ALLOWED_PRINT_ENDPOINTS = new Set(['print-receipt', 'print-fiscal', 'print-closing'])
+
+const TRUSTED_POS_ORIGINS = new Set(['https://titimenu.com', 'https://www.titimenu.com'])
+
+/**
+ * ¿La llamada viene de la página del POS y no de cualquier cosa que haya acabado
+ * cargándose en esa ventana (un iframe de terceros, una navegación a otro sitio, un
+ * anuncio)? Se comprueba el ORIGEN del frame que llama, no la ventana.
+ *
+ * En builds de desarrollo se admite además el `next dev` local, para poder probar la
+ * app contra un web sin desplegar. En el instalador (`app.isPackaged`) NO se admite:
+ * si no, cualquier página servida desde la propia máquina podría imprimir.
+ */
+function isTrustedPosSender(event) {
+  try {
+    const url = event.senderFrame?.url || ''
+    const { origin } = new URL(url)
+    if (TRUSTED_POS_ORIGINS.has(origin)) return true
+    if (!app.isPackaged && /^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin)) return true
+    console.warn(`[pos-ipc] llamada RECHAZADA desde un origen no autorizado: ${origin || '(vacío)'}`)
+    return false
+  } catch {
+    console.warn('[pos-ipc] llamada RECHAZADA: no se pudo determinar el origen')
+    return false
+  }
+}
+
+ipcMain.handle('pos:get-status', (event) => {
+  if (!isTrustedPosSender(event)) return null
+  return {
+    connected: true,
+    version: app.getVersion(),
+  }
+})
+
+ipcMain.handle('pos:print-job', async (event, args) => {
+  if (!isTrustedPosSender(event)) return { ok: false, error: 'origen no autorizado' }
+
+  // Lista DURA. Que la petición venga por IPC no la hace confiable: el `endpoint` es
+  // texto que llega de una página remota y decide qué documento se imprime. Nada de
+  // construir rutas con él, nada de aceptar lo que no esté en la lista.
+  const endpoint = typeof args?.endpoint === 'string' ? args.endpoint : ''
+  if (!ALLOWED_PRINT_ENDPOINTS.has(endpoint)) {
+    console.warn(`[pos-ipc] endpoint RECHAZADO: ${JSON.stringify(args?.endpoint)}`)
+    return { ok: false, error: 'endpoint no permitido' }
+  }
+
+  const payload = args?.payload
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return { ok: false, error: 'payload inválido' }
+  }
+
+  try {
+    // MISMA función que usa el servidor HTTP — el whitelist del payload, el
+    // businessInfo y el ruteo por order_type viven en un solo sitio (pieza 3). Dos
+    // copias del mapeo divergirían en silencio, que es el bug de `cashier_name`.
+    await handlePrintJob(endpoint, payload)
+    sendLog(`POS: ${endpoint} impreso`)
+    return { ok: true }
+  } catch (err) {
+    console.error(`[pos-ipc] fallo al imprimir ${endpoint}:`, err.message)
+    return { ok: false, error: err.message }
+  }
+})
+
 // ─── App Lifecycle ────────────────────────────────────────────────────────────
 
 app.whenReady().then(async () => {
