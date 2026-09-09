@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, Notification, dialog, shell, session } = require('electron')
+const { app, BrowserWindow, BrowserView, Menu, ipcMain, Notification, dialog, shell, session } = require('electron')
 const { autoUpdater } = require('electron-updater')
 const path = require('path')
 const http = require('http')
@@ -9,7 +9,6 @@ const { setCallbacks, startListening, disconnect } = require('./supabase')
 
 const store = new Store()
 
-let tray = null
 let configWindow = null
 let isConnected = false
 let httpServer = null
@@ -93,26 +92,13 @@ autoUpdater.on('update-downloaded', (info) => {
     title: 'TitiMenu',
     body: `Actualización v${info.version} lista. Reinicia para aplicarla.`
   }).show()
-  updateTray()
+  pushShellState()
 })
 
 autoUpdater.on('error', (err) => {
   sendLog(`Error de actualización: ${err.message}`)
   sendUpdateStatus('error', err.message)
 })
-
-// ─── Tray icons (base64 inline so no external assets needed at runtime) ──────
-
-function makeTrayIcon(connected) {
-  // 16x16 circle: green or red
-  const color = connected ? '48bb78' : 'e53e3e'
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16">
-    <circle cx="8" cy="8" r="7" fill="#${color}"/>
-  </svg>`
-  return nativeImage.createFromDataURL(
-    'data:image/svg+xml;base64,' + Buffer.from(svg).toString('base64')
-  )
-}
 
 // ─── Config Window ────────────────────────────────────────────────────────────
 
@@ -167,37 +153,10 @@ const POS_PARTITIONS = {
   staff: 'persist:titimenu-staff',
 }
 
-/** 'owner' | 'staff' — la elección de ESTE aparato, recordada entre arranques. */
-function entryMode() {
-  return store.get('posEntryMode') === 'staff' ? 'staff' : 'owner'
-}
-
-function hasEntryMode() {
-  return store.get('posEntryMode') === 'staff' || store.get('posEntryMode') === 'owner'
-}
-
-/**
- * Se pregunta UNA vez y se recuerda. Un terminal es del dueño o del personal, y es el
- * mismo todos los días: preguntar en cada arranque sería justo la fricción que esta
- * app existe para quitar. Se cambia cuando haga falta desde la bandeja.
- */
-async function askEntryMode() {
-  const { response } = await dialog.showMessageBox({
-    type: 'question',
-    title: 'TitiMenu',
-    message: '¿Cómo se usa este equipo?',
-    detail: 'Puedes cambiarlo cuando quieras desde el icono de TitiMenu en la barra.\n\n' +
-            '· Dueño — entra al panel completo con tu correo y contraseña.\n' +
-            '· Empleado — entra con el PIN del personal.',
-    buttons: ['Dueño', 'Empleado'],
-    defaultId: 0,
-    cancelId: 0,
-    noLink: true,
-  })
-  const mode = response === 1 ? 'staff' : 'owner'
-  store.set('posEntryMode', mode)
-  return mode
-}
+// Alto de la barra superior del armazón. Es lo que hace que se pueda VOLVER: la página
+// del POS es remota y no podemos —ni queremos— inyectarle un botón, así que el botón
+// vive en una franja nuestra por encima de ella.
+const SHELL_BAR_HEIGHT = 44
 
 // ÚNICA lista de orígenes de confianza. La comparten las tres defensas: quién puede
 // llamar al IPC (`isTrustedPosSender`), a dónde puede navegar la ventana
@@ -205,7 +164,10 @@ async function askEntryMode() {
 // sola lista para que no puedan discrepar.
 const TRUSTED_POS_ORIGINS = new Set(['https://titimenu.com', 'https://www.titimenu.com'])
 
-let posWindow = null
+let shellWindow = null
+let posView = null
+/** null | 'owner' | 'staff' — qué hay montado AHORA, no una preferencia recordada. */
+let embeddedRole = null
 
 /** ¿La URL pertenece al POS? Misma lista de orígenes que valida el IPC (pieza 2). */
 function isTrustedPosUrl(url) {
@@ -218,105 +180,152 @@ function openExternalSafely(url) {
 }
 
 /**
- * ¿Puede arrancarse directo en el POS? Hacen falta las dos cosas: el equipo
- * registrado (si no, el POS cargaría sin poder imprimir los pedidos del menú) y una
- * impresora de caja activa (si no, el primer cobro terminaría en un PDF sin que el
- * dueño entienda por qué). Si falta alguna, se abre la configuración: es el sitio
- * donde se arreglan las dos.
+ * ¿Está el equipo listo para imprimir? Hacen falta las dos cosas: la credencial del
+ * equipo y una impresora de caja activa. Ya NO decide qué ventana abre la app —eso lo
+ * hace el usuario en la pantalla de inicio—, pero la pantalla lo muestra para que se
+ * vea qué falta antes de cobrar en vez de descubrirlo con el primer ticket.
  */
 function isPosReady() {
   try { return bridgeAuth.hasCredential() && isPrinterActive(cashierPrinterName()) } catch { return false }
 }
 
-function createPosWindow() {
-  if (posWindow && !posWindow.isDestroyed()) {
-    posWindow.show()
-    posWindow.focus()
+// El POS remoto se monta como BrowserView DENTRO de la ventana del armazón, con la
+// barra nuestra encima. Esa franja es la única forma de tener un botón "Inicio"
+// permanente: la página es de titimenu.com y no se le inyecta nada (sería meter script
+// nuestro en contenido remoto, justo lo que el preload mínimo evita).
+function originOf(url) {
+  try { return new URL(url).origin } catch { return '' }
+}
+
+function shellState() {
+  let registered = false
+  try { registered = bridgeAuth.hasCredential() } catch {}
+  return {
+    businessName: store.get('businessName', ''),
+    registered,
+    hasStaffUrl: !!staffUrl(),
+    connected: isConnected,
+    embedded: embeddedRole,
+    origin: posView && !posView.webContents.isDestroyed() ? originOf(posView.webContents.getURL()) : '',
+  }
+}
+
+function pushShellState() {
+  if (shellWindow && !shellWindow.isDestroyed()) {
+    shellWindow.webContents.send('shell:state-changed', shellState())
+  }
+}
+
+function createShellWindow() {
+  if (shellWindow && !shellWindow.isDestroyed()) {
+    if (shellWindow.isMinimized()) shellWindow.restore()
+    shellWindow.show()
+    shellWindow.focus()
     return
   }
 
-  const mode = entryMode()
-  const url = mode === 'staff' ? staffUrl() : POS_URL
-
-  // Modo empleado sin slug: sólo pasa si este equipo se registró con una versión del
-  // web anterior a que `/api/bridge/session` devolviera el slug. El siguiente canje de
-  // la credencial lo trae; mientras tanto se dice qué pasa en vez de abrir una ventana
-  // en blanco.
-  if (!url) {
-    dialog.showMessageBox({
-      type: 'info',
-      title: 'TitiMenu',
-      message: 'Todavía no sé el enlace del personal de este negocio',
-      detail: 'Se obtiene solo la próxima vez que el equipo renueve su credencial. ' +
-              'Si tiene prisa, entra como Dueño desde el icono de TitiMenu en la barra.',
-    })
-    createConfigWindow()
-    return
-  }
-
-  posWindow = new BrowserWindow({
+  shellWindow = new BrowserWindow({
     width: 1280,
     height: 820,
     minWidth: 1024,
     minHeight: 700,
-    title: 'TitiMenu POS',
+    title: 'TitiMenu',
     backgroundColor: '#0a0a0a',
     show: false,
     webPreferences: {
-      // Preload PROPIO y mínimo (getStatus + printJob). NUNCA el de la config: esta
-      // ventana carga contenido remoto. Ver la cabecera de preload-pos.js.
+      // Preload del armazón: contenido LOCAL, superficie propia (navegar y leer
+      // estado). No es el del POS ni el de la configuración.
+      preload: path.join(__dirname, 'preload-shell.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  })
+
+  shellWindow.loadFile(path.join(__dirname, 'renderer', 'shell.html'))
+  shellWindow.once('ready-to-show', () => shellWindow.show())
+  shellWindow.on('resize', layoutPosView)
+  shellWindow.on('closed', () => {
+    destroyPosView()
+    shellWindow = null
+  })
+}
+
+function layoutPosView() {
+  if (!posView || !shellWindow || shellWindow.isDestroyed()) return
+  const { width, height } = shellWindow.getContentBounds()
+  posView.setBounds({ x: 0, y: SHELL_BAR_HEIGHT, width, height: Math.max(0, height - SHELL_BAR_HEIGHT) })
+}
+
+function destroyPosView() {
+  if (!posView) return
+  try {
+    if (shellWindow && !shellWindow.isDestroyed()) shellWindow.removeBrowserView(posView)
+    posView.webContents.destroy()
+  } catch {}
+  posView = null
+}
+
+/** Vuelve a la pantalla de inicio. Sin esto, elegir un rol era un callejón sin salida. */
+function goHome() {
+  destroyPosView()
+  embeddedRole = null
+  pushShellState()
+}
+
+/**
+ * Monta el POS del rol pedido. La partición se fija al crear la vista, y son dos
+ * distintas —dueño y empleado— porque son dos sesiones de Supabase en el mismo dominio
+ * que si no se pisarían.
+ */
+function openRole(role) {
+  if (role !== 'owner' && role !== 'staff') return
+  const url = role === 'staff' ? staffUrl() : POS_URL
+  // Sin slug no hay ruta de personal. La pantalla de inicio ya lo dice y deja el botón
+  // desactivado; esto es el cinturón.
+  if (!url) { pushShellState(); return }
+
+  createShellWindow()
+  destroyPosView()
+
+  posView = new BrowserView({
+    webPreferences: {
+      // Preload PROPIO y mínimo (getStatus + printJob). NUNCA el de la config ni el del
+      // armazón: esto carga contenido remoto. Ver la cabecera de preload-pos.js.
       preload: path.join(__dirname, 'preload-pos.js'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
       webviewTag: false,
-      partition: POS_PARTITIONS[mode],
+      partition: POS_PARTITIONS[role],
     },
   })
 
-  const wc = posWindow.webContents
+  shellWindow.setBrowserView(posView)
+  embeddedRole = role
+  layoutPosView()
 
-  // ── El dominio, VISIBLE ──
-  // Si la sesión de Supabase caduca, Next redirige a /login DENTRO de esta ventana y
-  // el dueño escribiría su contraseña en un recuadro sin barra de direcciones — que
-  // es exactamente como se ve un phishing. El título muestra el origen real y se
-  // actualiza en cada navegación; la página no puede sobrescribirlo.
-  const applyTitle = () => {
-    if (!posWindow || posWindow.isDestroyed()) return
-    let origin = ''
-    try { origin = new URL(wc.getURL()).origin } catch {}
-    posWindow.setTitle(origin ? `TitiMenu POS — ${origin}` : 'TitiMenu POS')
-  }
-  wc.on('page-title-updated', (event) => { event.preventDefault(); applyTitle() })
-  wc.on('did-navigate', applyTitle)
-  wc.on('did-navigate-in-page', applyTitle)
+  const wc = posView.webContents
 
   // ── No se sale de titimenu.com ──
-  // Va emparejado con la comprobación de origen del IPC: una impide LLEGAR, la otra
-  // impide ACTUAR. Con las dos, ni una navegación hostil ni un iframe pueden imprimir.
-  wc.on('will-navigate', (event, url) => {
-    if (isTrustedPosUrl(url)) return
+  // Emparejado con la comprobación de origen del IPC: una impide LLEGAR, la otra impide
+  // ACTUAR. Con las dos, ni una navegación hostil ni un iframe pueden imprimir.
+  wc.on('will-navigate', (event, target) => {
+    if (isTrustedPosUrl(target)) return
     event.preventDefault()
-    console.warn(`[pos-window] navegación BLOQUEADA a ${url}`)
-    openExternalSafely(url)
+    console.warn(`[pos-view] navegación BLOQUEADA a ${target}`)
+    openExternalSafely(target)
   })
 
-  // ── window.open ──
   // El fallback de impresión del web abre `about:blank` y le escribe el ticket dentro
   // (cinco sitios entre POS, PrintBill y FiscalInvoice). Eso se PERMITE o el dueño se
-  // queda sin su PDF cuando no hay impresora. Todo lo demás —el link a /descargar del
-  // banner, por ejemplo— se abre en el navegador del sistema, fuera de la app.
-  wc.setWindowOpenHandler(({ url }) => {
-    if (!url || url === 'about:blank') return { action: 'allow' }
-    openExternalSafely(url)
+  // queda sin su PDF. Lo demás se abre en el navegador del sistema, fuera de la app.
+  wc.setWindowOpenHandler(({ url: target }) => {
+    if (!target || target === 'about:blank') return { action: 'allow' }
+    openExternalSafely(target)
     return { action: 'deny' }
   })
 
-  // ── Llegar a la configuración desde el POS ──
-  // La ventana del POS no tiene barra ni menú, así que la impresora se cambiaba sólo
-  // desde la bandeja. Se añade el atajo estándar (Cmd+, / Ctrl+,) capturado antes de
-  // que la página lo vea. NO se inyecta ningún botón dentro de titimenu.com: eso sería
-  // meter script nuestro en contenido remoto, justo lo que la pieza 2 evita.
+  // Atajo estándar a la configuración, capturado antes de que lo vea la página.
   wc.on('before-input-event', (event, input) => {
     const modifier = process.platform === 'darwin' ? input.meta : input.control
     if (modifier && input.key === ',' && input.type === 'keyDown') {
@@ -325,47 +334,18 @@ function createPosWindow() {
     }
   })
 
-  posWindow.once('ready-to-show', () => {
-    applyTitle()
-    posWindow.show()
-  })
-
-  posWindow.on('closed', () => {
-    posWindow = null
-    // Cerrar el POS NO cierra la app: el bridge sigue en la bandeja imprimiendo los
-    // pedidos que llegan por realtime, que es su valor de siempre. En Mac se vuelve a
-    // esconder el icono del Dock para dejarla como estaba.
-    if (process.platform === 'darwin' && app.dock) app.dock.hide()
-  })
-
-  // En Mac la app vive sólo en la bandeja (`app.dock.hide()` al arrancar), pero una
-  // ventana que se usa todo el día tiene que poder alcanzarse con Cmd+Tab.
-  if (process.platform === 'darwin' && app.dock) app.dock.show()
+  // El DOMINIO en la barra: si la sesión caduca, Next redirige a /login aquí dentro, y
+  // una caja de contraseña sin procedencia visible se ve igual que un phishing.
+  wc.on('did-navigate', pushShellState)
+  wc.on('did-navigate-in-page', pushShellState)
 
   wc.on('render-process-gone', (_e, details) => {
-    sendLog(`La ventana del POS se cerró sola (${details.reason}). Ábrela otra vez desde la bandeja.`)
+    sendLog(`La pantalla del POS se cerró sola (${details.reason}). Vuelve a abrirla desde Inicio.`)
+    goHome()
   })
 
-  posWindow.loadURL(url)
-}
-
-/**
- * Cambia el rol de ESTE aparato. La partición se fija al crear la ventana, así que
- * cambiar de modo la recrea — es lo que mantiene las dos sesiones separadas y vivas.
- */
-function setEntryMode(mode) {
-  if (mode !== 'owner' && mode !== 'staff') return
-  if (entryMode() === mode && posWindow && !posWindow.isDestroyed()) {
-    posWindow.focus()
-    return
-  }
-  store.set('posEntryMode', mode)
-  if (posWindow && !posWindow.isDestroyed()) {
-    posWindow.destroy()
-    posWindow = null
-  }
-  updateTray()
-  createPosWindow()
+  wc.loadURL(url)
+  pushShellState()
 }
 
 /**
@@ -425,7 +405,7 @@ function buildAppMenu() {
     {
       label: 'Ventana',
       submenu: [
-        { label: 'Abrir POS', click: () => createPosWindow() },
+        { label: 'Inicio', accelerator: 'Command+Shift+H', click: () => { createShellWindow(); goHome() } },
         { role: 'reload', label: 'Recargar' },
         { type: 'separator' },
         { role: 'minimize', label: 'Minimizar' },
@@ -451,100 +431,6 @@ function applyPosPermissions(posSession) {
   })
 }
 
-// ─── Tray ─────────────────────────────────────────────────────────────────────
-
-function createTray() {
-  tray = new Tray(makeTrayIcon(false))
-  updateTray()
-}
-
-function updateTray() {
-  if (!tray) return
-
-  tray.setImage(makeTrayIcon(isConnected))
-  tray.setToolTip(
-    isConnected
-      ? 'TitiMenu — Conectado'
-      : 'TitiMenu — Desconectado'
-  )
-
-  const updateItems = updateReady
-    ? [
-        { type: 'separator' },
-        {
-          label: '⬆️ Instalar actualización',
-          click: () => handleQuitAndInstall()
-        }
-      ]
-    : [
-        {
-          label: '🔄 Buscar actualizaciones',
-          click: () => {
-            try { autoUpdater.checkForUpdatesAndNotify() } catch (e) { sendLog(`Error de actualización: ${e.message}`) }
-          }
-        }
-      ]
-
-  const menu = Menu.buildFromTemplate([
-    {
-      label: isConnected ? '● Conectado' : '○ Desconectado',
-      enabled: false
-    },
-    { type: 'separator' },
-    { label: '🧾 Abrir POS', click: () => createPosWindow() },
-    {
-      label: 'Este equipo entra como',
-      submenu: [
-        {
-          label: 'Dueño',
-          type: 'radio',
-          checked: entryMode() === 'owner',
-          click: () => setEntryMode('owner'),
-        },
-        {
-          label: 'Empleado (PIN)',
-          type: 'radio',
-          checked: entryMode() === 'staff',
-          click: () => setEntryMode('staff'),
-        },
-      ],
-    },
-    { label: '🖨️ Impresoras y configuración', click: () => createConfigWindow() },
-    {
-      label: 'Estado',
-      click: () => {
-        const businessId = store.get('businessId', '')
-        const printerName = store.get('printerName', '')
-        dialog.showMessageBox({
-          type: 'info',
-          title: 'Estado',
-          message: 'TitiMenu',
-          detail: [
-            `Estado: ${isConnected ? 'Conectado' : 'Desconectado'}`,
-            `Business ID: ${businessId || 'No configurado'}`,
-            `Impresora: ${printerName || 'No configurada'}`
-          ].join('\n')
-        })
-      }
-    },
-    {
-      label: 'Reiniciar conexión',
-      click: () => {
-        if (bridgeAuth.hasCredential()) {
-          startAuthenticatedListening()
-        } else {
-          createConfigWindow()
-        }
-      }
-    },
-    ...updateItems,
-    { type: 'separator' },
-    { label: 'Salir', click: () => app.quit() }
-  ])
-
-  tray.setContextMenu(menu)
-}
-
 // ─── Connection Status ────────────────────────────────────────────────────────
 
 function sendLog(text) {
@@ -556,7 +442,7 @@ function sendLog(text) {
 function onStatusChange(connected) {
   const wasConnected = isConnected
   isConnected = connected
-  updateTray()
+  pushShellState()
 
   if (configWindow && !configWindow.isDestroyed()) {
     configWindow.webContents.send('status-change', connected)
@@ -1121,6 +1007,19 @@ ipcMain.on('quit-and-install', () => {
   handleQuitAndInstall()
 })
 
+// ─── IPC del armazón (pantalla de inicio y barra superior) ────────────────────
+// Contenido LOCAL y de confianza (renderer/shell.html), así que no lleva la
+// comprobación de origen del canal del POS: ese existe porque el POS es remoto.
+
+ipcMain.handle('shell:open', (_event, target) => {
+  if (target === 'printer') { createConfigWindow(); return }
+  openRole(target)
+})
+
+ipcMain.handle('shell:home', () => goHome())
+
+ipcMain.handle('shell:state', () => ({ ...shellState(), ready: isPosReady() }))
+
 // ─── IPC de la ventana del POS ────────────────────────────────────────────────
 // Estos DOS canales son lo único que ve el POS (ver `preload-pos.js`). Los demás
 // canales del main —bridge-login, save-config, reset-config…— no le llegan porque el
@@ -1194,13 +1093,27 @@ ipcMain.handle('pos:print-job', async (event, args) => {
 
 // ─── App Lifecycle ────────────────────────────────────────────────────────────
 
+// UNA sola instancia. Antes no había cerrojo: abrir la app dos veces levantaba dos
+// procesos, y el segundo se suscribía OTRA VEZ al realtime — dos copias de cada pedido
+// automático — mientras su servidor HTTP se iba al 3002 y el web seguía hablando con el
+// primero. Con la app en bandeja eso era invisible: el icono "no abría nada" porque ya
+// estaba corriendo sin ventanas. Ahora el segundo arranque le pasa el foco al primero y
+// se muere solo.
+if (!app.requestSingleInstanceLock()) {
+  app.quit()
+} else {
+
+app.on('second-instance', () => {
+  createShellWindow()
+  if (shellWindow && !shellWindow.isDestroyed()) {
+    if (shellWindow.isMinimized()) shellWindow.restore()
+    shellWindow.focus()
+  }
+})
+
 app.whenReady().then(async () => {
   app.setAppUserModelId('com.titimenu.printbridge')
 
-  // Hide dock icon on Mac (tray-only app)
-  if (app.dock) app.dock.hide()
-
-  createTray()
   configurePosSession()
   buildAppMenu()
 
@@ -1217,19 +1130,13 @@ app.whenReady().then(async () => {
     },
   })
 
-  // Qué ventana abre la app. La decisión va DESPUÉS de `bridgeAuth.init` porque
-  // `hasCredential()` no sabe nada antes de eso. Equipo registrado + impresora activa
-  // → directo al POS, que es a lo que se viene; si falta algo, a la configuración,
-  // que es donde se arregla.
-  if (isPosReady()) {
-    // La pregunta del rol va sólo la PRIMERA vez (o tras actualizar desde una versión
-    // que no la tenía). A partir de ahí, directo a la URL que corresponda.
-    if (!hasEntryMode()) await askEntryMode()
-    updateTray()
-    createPosWindow()
-  } else {
-    createConfigWindow()
-  }
+  // Siempre se abre en la pantalla de inicio, con los tres botones. NO se recuerda un
+  // rol ni se salta el paso: recordarlo es lo que dejaba al usuario encerrado en una
+  // pantalla sin salida. Elegir cuesta un clic; salir de donde no querías estar costaba
+  // reinstalar. La decisión va después de `bridgeAuth.init` porque hasta entonces
+  // `hasCredential()` no sabe nada, y la pantalla muestra ese estado.
+  createShellWindow()
+  pushShellState()
 
   if (bridgeAuth.hasCredential()) {
     await startAuthenticatedListening()
@@ -1251,11 +1158,24 @@ app.whenReady().then(async () => {
   }, 24 * 60 * 60 * 1000)
 })
 
+// CERRAR LA VENTANA = CERRAR LA APP, en todas las plataformas (también en macOS, donde
+// lo normal sería quedarse viva sin ventanas).
+//
+// Es deliberado y es la regla del negocio: la auto-impresión funciona MIENTRAS la app
+// está abierta. El local enciende la PC y abre TitiMenu al empezar el turno; al cerrar,
+// cierra la app y deja de imprimir, que es justo lo que quiere. Antes se quedaba en la
+// bandeja escuchando pedidos con el negocio cerrado, y el icono "no abría nada" porque
+// ya estaba corriendo sin ventanas.
 app.on('window-all-closed', () => {
-  // Keep running in tray even when all windows are closed
+  app.quit()
 })
 
+// Que no quede proceso zombi: se corta el realtime (websocket que mantendría vivo el
+// bucle de eventos) y se cierra el servidor HTTP antes de salir.
 app.on('before-quit', () => {
+  destroyPosView()
   disconnect()
-  if (httpServer) httpServer.close()
+  if (httpServer) { httpServer.close(); httpServer = null }
 })
+
+} // fin del cerrojo de instancia única

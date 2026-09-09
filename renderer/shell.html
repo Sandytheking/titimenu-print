@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <title>TitiMenu</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      background: #0a0a0a;
+      color: #fff;
+      height: 100vh;
+      overflow: hidden;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+
+    /* ── Barra superior: la que queda ENCIMA del POS ── */
+    #bar {
+      display: none;
+      height: 44px;
+      align-items: center;
+      gap: 12px;
+      padding: 0 12px;
+      background: #121212;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+      -webkit-app-region: drag;
+    }
+    body.embedded #bar { display: flex; }
+
+    #bar button {
+      -webkit-app-region: no-drag;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.12);
+      color: #fff;
+      font-size: 13px;
+      font-weight: 600;
+      padding: 6px 14px;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+    #bar button:hover { background: rgba(255,255,255,0.12); }
+
+    #who { font-size: 13px; font-weight: 700; }
+    /* El DOMINIO, visible. Si la sesión caduca y aparece /login, tiene que verse que
+       es titimenu.com de verdad y no una caja de contraseña sin procedencia. */
+    #origin {
+      font-size: 12px;
+      color: rgba(255,255,255,0.45);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      margin-left: auto;
+      -webkit-app-region: no-drag;
+    }
+    #dot { width: 8px; height: 8px; border-radius: 50%; background: #e53e3e; flex-shrink: 0; }
+    #dot.on { background: #48bb78; }
+
+    /* ── Pantalla de inicio ── */
+    #home {
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 32px;
+      gap: 28px;
+    }
+    body.embedded #home { display: none; }
+
+    #brand { text-align: center; }
+    #brand h1 { font-size: 30px; letter-spacing: -0.5px; }
+    #brand p { margin-top: 6px; font-size: 14px; color: rgba(255,255,255,0.5); }
+
+    #cards {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(180px, 240px));
+      gap: 18px;
+      width: 100%;
+      max-width: 780px;
+    }
+    @media (max-width: 720px) { #cards { grid-template-columns: 1fr; } }
+
+    .card {
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.10);
+      border-radius: 18px;
+      padding: 28px 20px;
+      text-align: center;
+      cursor: pointer;
+      color: #fff;
+      font: inherit;
+      transition: background .12s, border-color .12s, transform .12s;
+    }
+    .card:hover { background: rgba(255,255,255,0.08); border-color: rgba(255,255,255,0.25); }
+    .card:active { transform: scale(0.985); }
+    .card:disabled { opacity: .4; cursor: not-allowed; }
+    .card .ico { font-size: 40px; line-height: 1; }
+    .card .t { margin-top: 14px; font-size: 17px; font-weight: 800; }
+    .card .d { margin-top: 6px; font-size: 12.5px; color: rgba(255,255,255,0.5); line-height: 1.45; }
+
+    #status { font-size: 12.5px; color: rgba(255,255,255,0.45); display: flex; align-items: center; gap: 8px; }
+    #note {
+      font-size: 12.5px; color: #f6ad55; text-align: center; max-width: 520px;
+      line-height: 1.5; min-height: 18px;
+    }
+  </style>
+</head>
+<body>
+  <div id="bar">
+    <button id="back">← Inicio</button>
+    <span id="who"></span>
+    <span id="origin"></span>
+  </div>
+
+  <div id="home">
+    <div id="brand">
+      <h1>TitiMenu</h1>
+      <p id="biz"></p>
+    </div>
+
+    <div id="cards">
+      <button class="card" id="c-owner">
+        <div class="ico">🧾</div>
+        <div class="t">Dueño</div>
+        <div class="d">Panel completo: POS, mesas, reportes. Con tu correo y contraseña.</div>
+      </button>
+      <button class="card" id="c-staff">
+        <div class="ico">👤</div>
+        <div class="t">Empleado</div>
+        <div class="d">Entrar con el PIN del personal.</div>
+      </button>
+      <button class="card" id="c-printer">
+        <div class="ico">🖨️</div>
+        <div class="t">Impresora</div>
+        <div class="d">Elegir impresoras, ancho de papel y conectar este equipo.</div>
+      </button>
+    </div>
+
+    <div id="note"></div>
+    <div id="status"><span id="dot2"></span><span id="stxt"></span></div>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id)
+
+    function render(state) {
+      $('biz').textContent = state.businessName
+        ? state.businessName
+        : 'Este equipo todavía no está conectado a un negocio'
+
+      // Sin slug no hay ruta /staff/{slug} que abrir. Se desactiva el botón y se DICE
+      // por qué, en vez de abrir una ventana en blanco.
+      $('c-staff').disabled = !state.hasStaffUrl
+      $('note').textContent = state.hasStaffUrl
+        ? ''
+        : (state.registered
+            ? 'La entrada de empleado se activa sola la próxima vez que el equipo renueve su credencial.'
+            : 'Conecta este equipo desde "Impresora" para habilitar la entrada de empleado.')
+
+      const dot = $('dot'), dot2 = $('dot2')
+      dot.className = state.connected ? 'on' : ''
+      dot2.style.cssText = 'width:8px;height:8px;border-radius:50%;display:inline-block;background:' +
+        (state.connected ? '#48bb78' : '#e53e3e')
+      $('stxt').textContent = state.connected
+        ? 'Conectado — imprimiendo pedidos automáticamente'
+        : 'Sin conexión — no se imprimirán pedidos automáticos'
+
+      document.body.classList.toggle('embedded', !!state.embedded)
+      $('who').textContent = state.embedded === 'owner' ? 'Dueño'
+        : state.embedded === 'staff' ? 'Empleado' : ''
+      $('origin').textContent = state.origin || ''
+    }
+
+    $('c-owner').onclick   = () => window.shell.open('owner')
+    $('c-staff').onclick   = () => window.shell.open('staff')
+    $('c-printer').onclick = () => window.shell.open('printer')
+    $('back').onclick      = () => window.shell.goHome()
+
+    window.shell.onState(render)
+    window.shell.getState().then(render)
+  </script>
+</body>
+</html>
