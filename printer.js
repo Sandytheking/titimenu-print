@@ -23,7 +23,18 @@ function translatePaymentMethod(raw) {
 
 const Store = require('electron-store')
 const store = new Store()
-const { BrowserWindow } = require('electron')
+const { BrowserWindow, Notification } = require('electron')
+const { ensureQueueHealthy } = require('./printQueue')
+
+// Descartar trabajos encolados no puede ser silencioso: son ventas ya cobradas cuyo
+// recibo no va a salir nunca. Va al log y a una notificación del sistema, porque quien
+// tiene que enterarse está en la caja, no mirando la consola.
+function logQueue(message) {
+  console.warn(`[printQueue] ${message}`)
+  try {
+    new Notification({ title: 'TitiMenu — impresión', body: message }).show()
+  } catch {}
+}
 
 const TEST_MODE = false
 const os = require('os')
@@ -233,6 +244,10 @@ async function createPrinter(printerName) {
 
 async function sendRawToPrinter(buffer, printerName) {
   console.log(`[sendRawToPrinter] Enviando ${buffer.length} bytes a la impresora: ${printerName}`)
+  // Tope de la cola del sistema. Va aquí —en el punto donde el trabajo ENTRA al
+  // spooler— y no en cada llamador, para que lo respeten los tres caminos por igual:
+  // el realtime, el HTTP y el IPC del POS. Ver printQueue.js.
+  await ensureQueueHealthy(printerName, logQueue)
   if (process.platform === 'win32') {
     return new Promise((resolve, reject) => {
       const tmp = path.join(os.tmpdir(), `titimenu_${Date.now()}.bin`)
@@ -427,6 +442,10 @@ async function printHTML(htmlContent, printerName) {
     writeTestOutput(['--- SIMULACIÓN MODO SISTEMA ---', ...cleanText])
     return
   }
+
+  // El otro punto de entrada al spooler (modo "sistema"/driver). Va DESPUÉS del modo
+  // test, que no toca ninguna cola real.
+  await ensureQueueHealthy(printerName, logQueue)
 
   return new Promise((resolve, reject) => {
     const printWindow = new BrowserWindow({
@@ -923,7 +942,7 @@ function generateTestReceiptHTML(businessName, paperWidth) {
   const dateStr = new Date().toLocaleString('es-DO')
   const bodyContent = `
     <div class="header center">
-      <div class="text-large">TitiMenu Print Bridge</div>
+      <div class="text-large">TitiMenu</div>
       <div class="business-name" style="margin-top: 4px;">${businessName || 'Mi Negocio'}</div>
       <div class="tag">PÁGINA DE PRUEBA</div>
       <div class="business-details" style="margin-top: 6px;">${dateStr}</div>
@@ -1502,7 +1521,7 @@ async function printTestPage(printerName, businessName) {
 
   const lines = [
     '================================',
-    '  TitiMenu Print Bridge',
+    '  TitiMenu',
     businessName || 'Mi Negocio',
     '================================',
     'Impresora configurada OK!',
@@ -1528,7 +1547,7 @@ async function printTestPage(printerName, businessName) {
   printer.alignCenter()
   printer.println('================================')
   printer.bold(true)
-  printer.println('  TitiMenu Print Bridge')
+  printer.println('  TitiMenu')
   printer.bold(false)
   printer.println(businessName || 'Mi Negocio')
   printer.println('================================')

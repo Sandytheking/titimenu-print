@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>TitiMenu Print Bridge — Configuración</title>
+  <title>TitiMenu — Configuración</title>
   <!-- Google Fonts for Outfit & Plus Jakarta Sans -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -734,7 +734,7 @@
       <div class="logo">
         <span class="logo-red">Titi</span><span class="logo-white">Menu</span>
       </div>
-      <div class="subtitle">Print Bridge</div>
+      <div class="subtitle">POS e impresión</div>
     </div>
 
     <!-- Status Widget -->
@@ -1280,7 +1280,7 @@
         if (pick.style.display !== 'none' && bridgeBusinesses.length) {
           btnLabel.textContent = 'Conectando…'
           const bizId = document.getElementById('bridgeBizSelect').value
-          const r = await window.electronAPI.bridgeRegister({ businessId: bizId, deviceName: 'Print Bridge' })
+          const r = await window.electronAPI.bridgeRegister({ businessId: bizId, deviceName: 'TitiMenu Desktop' })
           if (!r.success) { msg.textContent = r.error; return }
           document.getElementById('bridgePassword').value = ''
           await refreshBridgeCard()
@@ -1294,7 +1294,7 @@
 
         if (bridgeBusinesses.length === 1) {
           const r = await window.electronAPI.bridgeRegister({
-            businessId: bridgeBusinesses[0].id, deviceName: 'Print Bridge',
+            businessId: bridgeBusinesses[0].id, deviceName: 'TitiMenu Desktop',
           })
           if (!r.success) { msg.textContent = r.error; return }
           document.getElementById('bridgePassword').value = ''

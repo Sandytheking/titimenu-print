@@ -75,13 +75,13 @@ autoUpdater.on('update-available', (info) => {
   sendLog(`Nueva versión disponible: v${info.version}`)
   sendUpdateStatus('available', info)
   new Notification({
-    title: 'TitiMenu Print Bridge',
+    title: 'TitiMenu',
     body: `Descargando actualización v${info.version}`
   }).show()
 })
 
 autoUpdater.on('update-not-available', () => {
-  sendLog('TitiMenu Print Bridge está actualizado')
+  sendLog('TitiMenu está actualizado')
   sendUpdateStatus('not-available')
 })
 
@@ -90,7 +90,7 @@ autoUpdater.on('update-downloaded', (info) => {
   sendLog(`✅ Actualización v${info.version} lista — se instalará al cerrar`)
   sendUpdateStatus('downloaded', info)
   new Notification({
-    title: 'TitiMenu Print Bridge',
+    title: 'TitiMenu',
     body: `Actualización v${info.version} lista. Reinicia para aplicarla.`
   }).show()
   updateTray()
@@ -126,7 +126,7 @@ function createConfigWindow() {
     width: 440,
     height: 720,
     resizable: false,
-    title: 'TitiMenu Print Bridge — Configuración',
+    title: 'TitiMenu — Configuración',
     backgroundColor: '#0a0a0a',
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     webPreferences: {
@@ -146,17 +146,64 @@ function createConfigWindow() {
 // principal en vez de por un fetch a loopback — que es justo lo que Chrome bloquea y
 // lo que obliga hoy a instalar la extensión.
 
-const POS_URL = 'https://titimenu.com/dashboard/pos'
+const POS_ORIGIN = 'https://titimenu.com'
+const POS_URL = `${POS_ORIGIN}/dashboard/pos`
+
+// El personal entra por OTRA ruta —/staff/{slug}— con su PIN, no por la del dueño. El
+// slug lo trae el canje de la credencial (`applyBusinessInfo`), así que NO hay que
+// pedírselo a nadie: la app ya sabe de qué negocio es este equipo. Y como el canje se
+// repite, el dato se revalida solo en vez de quedarse congelado.
+function staffUrl() {
+  const slug = store.get('businessSlug', '')
+  return slug ? `${POS_ORIGIN}/staff/${slug}` : null
+}
+
+// Dos sesiones separadas y PERSISTENTES. Dueño y empleado son dos sesiones de Supabase
+// en el mismo dominio: con una sola partición se pisarían, y cambiar de modo obligaría
+// a escribir la contraseña o el PIN otra vez. Sin el prefijo `persist:` la sesión vive
+// en memoria y se pierde al cerrar la app.
+const POS_PARTITIONS = {
+  owner: 'persist:titimenu-pos',   // nombre heredado: no cambiarlo conserva la sesión ya guardada
+  staff: 'persist:titimenu-staff',
+}
+
+/** 'owner' | 'staff' — la elección de ESTE aparato, recordada entre arranques. */
+function entryMode() {
+  return store.get('posEntryMode') === 'staff' ? 'staff' : 'owner'
+}
+
+function hasEntryMode() {
+  return store.get('posEntryMode') === 'staff' || store.get('posEntryMode') === 'owner'
+}
+
+/**
+ * Se pregunta UNA vez y se recuerda. Un terminal es del dueño o del personal, y es el
+ * mismo todos los días: preguntar en cada arranque sería justo la fricción que esta
+ * app existe para quitar. Se cambia cuando haga falta desde la bandeja.
+ */
+async function askEntryMode() {
+  const { response } = await dialog.showMessageBox({
+    type: 'question',
+    title: 'TitiMenu',
+    message: '¿Cómo se usa este equipo?',
+    detail: 'Puedes cambiarlo cuando quieras desde el icono de TitiMenu en la barra.\n\n' +
+            '· Dueño — entra al panel completo con tu correo y contraseña.\n' +
+            '· Empleado — entra con el PIN del personal.',
+    buttons: ['Dueño', 'Empleado'],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+  })
+  const mode = response === 1 ? 'staff' : 'owner'
+  store.set('posEntryMode', mode)
+  return mode
+}
 
 // ÚNICA lista de orígenes de confianza. La comparten las tres defensas: quién puede
 // llamar al IPC (`isTrustedPosSender`), a dónde puede navegar la ventana
 // (`will-navigate`) y a quién se le conceden permisos (`configurePosSession`). Una
 // sola lista para que no puedan discrepar.
 const TRUSTED_POS_ORIGINS = new Set(['https://titimenu.com', 'https://www.titimenu.com'])
-
-// Partición PERSISTENTE: sin el prefijo `persist:` la sesión vive en memoria y el
-// dueño tendría que volver a iniciar sesión cada vez que abre la app.
-const POS_PARTITION = 'persist:titimenu-pos'
 
 let posWindow = null
 
@@ -188,6 +235,25 @@ function createPosWindow() {
     return
   }
 
+  const mode = entryMode()
+  const url = mode === 'staff' ? staffUrl() : POS_URL
+
+  // Modo empleado sin slug: sólo pasa si este equipo se registró con una versión del
+  // web anterior a que `/api/bridge/session` devolviera el slug. El siguiente canje de
+  // la credencial lo trae; mientras tanto se dice qué pasa en vez de abrir una ventana
+  // en blanco.
+  if (!url) {
+    dialog.showMessageBox({
+      type: 'info',
+      title: 'TitiMenu',
+      message: 'Todavía no sé el enlace del personal de este negocio',
+      detail: 'Se obtiene solo la próxima vez que el equipo renueve su credencial. ' +
+              'Si tiene prisa, entra como Dueño desde el icono de TitiMenu en la barra.',
+    })
+    createConfigWindow()
+    return
+  }
+
   posWindow = new BrowserWindow({
     width: 1280,
     height: 820,
@@ -204,7 +270,7 @@ function createPosWindow() {
       nodeIntegration: false,
       sandbox: true,
       webviewTag: false,
-      partition: POS_PARTITION,
+      partition: POS_PARTITIONS[mode],
     },
   })
 
@@ -246,6 +312,19 @@ function createPosWindow() {
     return { action: 'deny' }
   })
 
+  // ── Llegar a la configuración desde el POS ──
+  // La ventana del POS no tiene barra ni menú, así que la impresora se cambiaba sólo
+  // desde la bandeja. Se añade el atajo estándar (Cmd+, / Ctrl+,) capturado antes de
+  // que la página lo vea. NO se inyecta ningún botón dentro de titimenu.com: eso sería
+  // meter script nuestro en contenido remoto, justo lo que la pieza 2 evita.
+  wc.on('before-input-event', (event, input) => {
+    const modifier = process.platform === 'darwin' ? input.meta : input.control
+    if (modifier && input.key === ',' && input.type === 'keyDown') {
+      event.preventDefault()
+      createConfigWindow()
+    }
+  })
+
   posWindow.once('ready-to-show', () => {
     applyTitle()
     posWindow.show()
@@ -267,7 +346,26 @@ function createPosWindow() {
     sendLog(`La ventana del POS se cerró sola (${details.reason}). Ábrela otra vez desde la bandeja.`)
   })
 
-  posWindow.loadURL(POS_URL)
+  posWindow.loadURL(url)
+}
+
+/**
+ * Cambia el rol de ESTE aparato. La partición se fija al crear la ventana, así que
+ * cambiar de modo la recrea — es lo que mantiene las dos sesiones separadas y vivas.
+ */
+function setEntryMode(mode) {
+  if (mode !== 'owner' && mode !== 'staff') return
+  if (entryMode() === mode && posWindow && !posWindow.isDestroyed()) {
+    posWindow.focus()
+    return
+  }
+  store.set('posEntryMode', mode)
+  if (posWindow && !posWindow.isDestroyed()) {
+    posWindow.destroy()
+    posWindow = null
+  }
+  updateTray()
+  createPosWindow()
 }
 
 /**
@@ -276,8 +374,68 @@ function createPosWindow() {
  * propósito — así se ve en el log qué está pidiendo el POS en vez de adivinarlo.
  */
 function configurePosSession() {
-  const posSession = session.fromPartition(POS_PARTITION)
+  // Las DOS particiones (dueño y empleado) con la misma política: una sola regla, no
+  // una por sesión que puedan discrepar.
+  for (const partition of Object.values(POS_PARTITIONS)) {
+    applyPosPermissions(session.fromPartition(partition))
+  }
+}
 
+/**
+ * Menú de aplicación (sólo macOS). Con el POS abierto el icono del Dock aparece, y con
+ * él la barra de menús: si no ponemos una, macOS muestra la de Electron por defecto.
+ * Aquí van el atajo a la configuración y —importante— los roles de edición, que son
+ * los que hacen funcionar copiar y pegar dentro del POS.
+ *
+ * En Windows NO se toca: una barra de menús colgando encima del POS estorbaría, y la
+ * de por defecto es la que trae los aceleradores de copiar/pegar.
+ */
+function buildAppMenu() {
+  if (process.platform !== 'darwin') return
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    {
+      label: 'TitiMenu',
+      submenu: [
+        { role: 'about', label: 'Acerca de TitiMenu' },
+        { type: 'separator' },
+        {
+          label: 'Impresoras y configuración…',
+          accelerator: 'Command+,',
+          click: () => createConfigWindow(),
+        },
+        { type: 'separator' },
+        { role: 'hide', label: 'Ocultar TitiMenu' },
+        { role: 'hideOthers', label: 'Ocultar otras' },
+        { type: 'separator' },
+        { role: 'quit', label: 'Salir de TitiMenu' },
+      ],
+    },
+    {
+      label: 'Edición',
+      submenu: [
+        { role: 'undo', label: 'Deshacer' },
+        { role: 'redo', label: 'Rehacer' },
+        { type: 'separator' },
+        { role: 'cut', label: 'Cortar' },
+        { role: 'copy', label: 'Copiar' },
+        { role: 'paste', label: 'Pegar' },
+        { role: 'selectAll', label: 'Seleccionar todo' },
+      ],
+    },
+    {
+      label: 'Ventana',
+      submenu: [
+        { label: 'Abrir POS', click: () => createPosWindow() },
+        { role: 'reload', label: 'Recargar' },
+        { type: 'separator' },
+        { role: 'minimize', label: 'Minimizar' },
+        { role: 'close', label: 'Cerrar' },
+      ],
+    },
+  ]))
+}
+
+function applyPosPermissions(posSession) {
   const decide = (permission, requestingUrl) => {
     const ok = permission === 'notifications' && isTrustedPosUrl(requestingUrl || '')
     if (!ok) console.warn(`[pos-window] permiso DENEGADO: ${permission} (${requestingUrl || 'origen desconocido'})`)
@@ -306,8 +464,8 @@ function updateTray() {
   tray.setImage(makeTrayIcon(isConnected))
   tray.setToolTip(
     isConnected
-      ? 'TitiMenu Print Bridge — Conectado'
-      : 'TitiMenu Print Bridge — Desconectado'
+      ? 'TitiMenu — Conectado'
+      : 'TitiMenu — Desconectado'
   )
 
   const updateItems = updateReady
@@ -334,7 +492,24 @@ function updateTray() {
     },
     { type: 'separator' },
     { label: '🧾 Abrir POS', click: () => createPosWindow() },
-    { label: 'Abrir configuración', click: () => createConfigWindow() },
+    {
+      label: 'Este equipo entra como',
+      submenu: [
+        {
+          label: 'Dueño',
+          type: 'radio',
+          checked: entryMode() === 'owner',
+          click: () => setEntryMode('owner'),
+        },
+        {
+          label: 'Empleado (PIN)',
+          type: 'radio',
+          checked: entryMode() === 'staff',
+          click: () => setEntryMode('staff'),
+        },
+      ],
+    },
+    { label: '🖨️ Impresoras y configuración', click: () => createConfigWindow() },
     {
       label: 'Estado',
       click: () => {
@@ -343,7 +518,7 @@ function updateTray() {
         dialog.showMessageBox({
           type: 'info',
           title: 'Estado',
-          message: 'TitiMenu Print Bridge',
+          message: 'TitiMenu',
           detail: [
             `Estado: ${isConnected ? 'Conectado' : 'Desconectado'}`,
             `Business ID: ${businessId || 'No configurado'}`,
@@ -389,7 +564,7 @@ function onStatusChange(connected) {
 
   if (connected && !wasConnected) {
     new Notification({
-      title: 'TitiMenu Print Bridge',
+      title: 'TitiMenu',
       body: 'Conectado — escuchando órdenes'
     }).show()
   }
@@ -421,6 +596,9 @@ function isPrinterActive(name) {
 function applyBusinessInfo(biz) {
   if (!biz) return
   if (biz.name) store.set('businessName', biz.name)
+  // El slug arma la URL del personal (/staff/{slug}). Llega por el MISMO canje que el
+  // resto, así que se revalida solo si el negocio lo cambia.
+  if (biz.slug) store.set('businessSlug', biz.slug)
   store.set('businessLegalName', biz.legal_name || '')
   store.set('businessRnc', biz.rnc || '')
   store.set('businessAddress', biz.address || '')
@@ -484,7 +662,7 @@ async function onNewOrder(type, order) {
 
   if (!isPrinterActive(printerCaja) && !isPrinterActive(printerCocina) && !isPrinterActive(printerBar)) {
     new Notification({
-      title: 'TitiMenu Print Bridge',
+      title: 'TitiMenu',
       body: 'Nueva orden recibida pero no hay ninguna impresora activa configurada'
     }).show()
     return
@@ -1024,6 +1202,7 @@ app.whenReady().then(async () => {
 
   createTray()
   configurePosSession()
+  buildAppMenu()
 
   // Credencial del EQUIPO (Opción B). init antes de cualquier canje: necesita el store y el
   // logger, y safeStorage solo está disponible con la app lista.
@@ -1043,6 +1222,10 @@ app.whenReady().then(async () => {
   // → directo al POS, que es a lo que se viene; si falta algo, a la configuración,
   // que es donde se arregla.
   if (isPosReady()) {
+    // La pregunta del rol va sólo la PRIMERA vez (o tras actualizar desde una versión
+    // que no la tenía). A partir de ahí, directo a la URL que corresponda.
+    if (!hasEntryMode()) await askEntryMode()
+    updateTray()
     createPosWindow()
   } else {
     createConfigWindow()
