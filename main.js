@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, Notification, dialog } = require('electron')
+const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, Notification, dialog, shell, session } = require('electron')
 const { autoUpdater } = require('electron-updater')
 const path = require('path')
 const http = require('http')
@@ -140,6 +140,159 @@ function createConfigWindow() {
   configWindow.on('closed', () => { configWindow = null })
 }
 
+// ─── Ventana del POS ──────────────────────────────────────────────────────────
+// Carga el POS web REAL (titimenu.com) dentro de la app. No es un POS nuevo: es el
+// mismo que corre en el navegador, con la impresión saliendo por IPC al proceso
+// principal en vez de por un fetch a loopback — que es justo lo que Chrome bloquea y
+// lo que obliga hoy a instalar la extensión.
+
+const POS_URL = 'https://titimenu.com/dashboard/pos'
+
+// ÚNICA lista de orígenes de confianza. La comparten las tres defensas: quién puede
+// llamar al IPC (`isTrustedPosSender`), a dónde puede navegar la ventana
+// (`will-navigate`) y a quién se le conceden permisos (`configurePosSession`). Una
+// sola lista para que no puedan discrepar.
+const TRUSTED_POS_ORIGINS = new Set(['https://titimenu.com', 'https://www.titimenu.com'])
+
+// Partición PERSISTENTE: sin el prefijo `persist:` la sesión vive en memoria y el
+// dueño tendría que volver a iniciar sesión cada vez que abre la app.
+const POS_PARTITION = 'persist:titimenu-pos'
+
+let posWindow = null
+
+/** ¿La URL pertenece al POS? Misma lista de orígenes que valida el IPC (pieza 2). */
+function isTrustedPosUrl(url) {
+  try { return TRUSTED_POS_ORIGINS.has(new URL(url).origin) } catch { return false }
+}
+
+/** Abre en el NAVEGADOR del sistema, nunca dentro de la app. Sólo http/https. */
+function openExternalSafely(url) {
+  if (/^https?:\/\//i.test(url)) shell.openExternal(url).catch(() => {})
+}
+
+/**
+ * ¿Puede arrancarse directo en el POS? Hacen falta las dos cosas: el equipo
+ * registrado (si no, el POS cargaría sin poder imprimir los pedidos del menú) y una
+ * impresora de caja activa (si no, el primer cobro terminaría en un PDF sin que el
+ * dueño entienda por qué). Si falta alguna, se abre la configuración: es el sitio
+ * donde se arreglan las dos.
+ */
+function isPosReady() {
+  try { return bridgeAuth.hasCredential() && isPrinterActive(cashierPrinterName()) } catch { return false }
+}
+
+function createPosWindow() {
+  if (posWindow && !posWindow.isDestroyed()) {
+    posWindow.show()
+    posWindow.focus()
+    return
+  }
+
+  posWindow = new BrowserWindow({
+    width: 1280,
+    height: 820,
+    minWidth: 1024,
+    minHeight: 700,
+    title: 'TitiMenu POS',
+    backgroundColor: '#0a0a0a',
+    show: false,
+    webPreferences: {
+      // Preload PROPIO y mínimo (getStatus + printJob). NUNCA el de la config: esta
+      // ventana carga contenido remoto. Ver la cabecera de preload-pos.js.
+      preload: path.join(__dirname, 'preload-pos.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      webviewTag: false,
+      partition: POS_PARTITION,
+    },
+  })
+
+  const wc = posWindow.webContents
+
+  // ── El dominio, VISIBLE ──
+  // Si la sesión de Supabase caduca, Next redirige a /login DENTRO de esta ventana y
+  // el dueño escribiría su contraseña en un recuadro sin barra de direcciones — que
+  // es exactamente como se ve un phishing. El título muestra el origen real y se
+  // actualiza en cada navegación; la página no puede sobrescribirlo.
+  const applyTitle = () => {
+    if (!posWindow || posWindow.isDestroyed()) return
+    let origin = ''
+    try { origin = new URL(wc.getURL()).origin } catch {}
+    posWindow.setTitle(origin ? `TitiMenu POS — ${origin}` : 'TitiMenu POS')
+  }
+  wc.on('page-title-updated', (event) => { event.preventDefault(); applyTitle() })
+  wc.on('did-navigate', applyTitle)
+  wc.on('did-navigate-in-page', applyTitle)
+
+  // ── No se sale de titimenu.com ──
+  // Va emparejado con la comprobación de origen del IPC: una impide LLEGAR, la otra
+  // impide ACTUAR. Con las dos, ni una navegación hostil ni un iframe pueden imprimir.
+  wc.on('will-navigate', (event, url) => {
+    if (isTrustedPosUrl(url)) return
+    event.preventDefault()
+    console.warn(`[pos-window] navegación BLOQUEADA a ${url}`)
+    openExternalSafely(url)
+  })
+
+  // ── window.open ──
+  // El fallback de impresión del web abre `about:blank` y le escribe el ticket dentro
+  // (cinco sitios entre POS, PrintBill y FiscalInvoice). Eso se PERMITE o el dueño se
+  // queda sin su PDF cuando no hay impresora. Todo lo demás —el link a /descargar del
+  // banner, por ejemplo— se abre en el navegador del sistema, fuera de la app.
+  wc.setWindowOpenHandler(({ url }) => {
+    if (!url || url === 'about:blank') return { action: 'allow' }
+    openExternalSafely(url)
+    return { action: 'deny' }
+  })
+
+  posWindow.once('ready-to-show', () => {
+    applyTitle()
+    posWindow.show()
+  })
+
+  posWindow.on('closed', () => {
+    posWindow = null
+    // Cerrar el POS NO cierra la app: el bridge sigue en la bandeja imprimiendo los
+    // pedidos que llegan por realtime, que es su valor de siempre. En Mac se vuelve a
+    // esconder el icono del Dock para dejarla como estaba.
+    if (process.platform === 'darwin' && app.dock) app.dock.hide()
+  })
+
+  // En Mac la app vive sólo en la bandeja (`app.dock.hide()` al arrancar), pero una
+  // ventana que se usa todo el día tiene que poder alcanzarse con Cmd+Tab.
+  if (process.platform === 'darwin' && app.dock) app.dock.show()
+
+  wc.on('render-process-gone', (_e, details) => {
+    sendLog(`La ventana del POS se cerró sola (${details.reason}). Ábrela otra vez desde la bandeja.`)
+  })
+
+  posWindow.loadURL(POS_URL)
+}
+
+/**
+ * Permisos del navegador dentro de la ventana del POS. Por defecto NO se concede
+ * nada: sólo notificaciones, y sólo a titimenu.com. Las denegaciones se registran a
+ * propósito — así se ve en el log qué está pidiendo el POS en vez de adivinarlo.
+ */
+function configurePosSession() {
+  const posSession = session.fromPartition(POS_PARTITION)
+
+  const decide = (permission, requestingUrl) => {
+    const ok = permission === 'notifications' && isTrustedPosUrl(requestingUrl || '')
+    if (!ok) console.warn(`[pos-window] permiso DENEGADO: ${permission} (${requestingUrl || 'origen desconocido'})`)
+    return ok
+  }
+
+  posSession.setPermissionRequestHandler((wc, permission, callback, details) => {
+    callback(decide(permission, details?.requestingUrl || wc?.getURL()))
+  })
+
+  posSession.setPermissionCheckHandler((wc, permission, requestingOrigin) => {
+    return decide(permission, requestingOrigin || wc?.getURL())
+  })
+}
+
 // ─── Tray ─────────────────────────────────────────────────────────────────────
 
 function createTray() {
@@ -180,6 +333,7 @@ function updateTray() {
       enabled: false
     },
     { type: 'separator' },
+    { label: '🧾 Abrir POS', click: () => createPosWindow() },
     { label: 'Abrir configuración', click: () => createConfigWindow() },
     {
       label: 'Estado',
@@ -452,10 +606,15 @@ class PrintJobError extends Error {
   }
 }
 
-/** Impresora de caja configurada, o revienta con el 503 de siempre. */
-function activeCashierPrinter() {
+/** Impresora de caja configurada (puede no estar activa). */
+function cashierPrinterName() {
   const legacyPrinter = store.get('printerName', '')
-  const printerCaja = store.has('printerCaja') ? store.get('printerCaja') : legacyPrinter
+  return store.has('printerCaja') ? store.get('printerCaja') : legacyPrinter
+}
+
+/** Impresora de caja activa, o revienta con el 503 de siempre. */
+function activeCashierPrinter() {
+  const printerCaja = cashierPrinterName()
   if (!isPrinterActive(printerCaja)) {
     throw new PrintJobError('No hay impresora de caja activa configurada', 503)
   }
@@ -794,8 +953,6 @@ ipcMain.on('quit-and-install', () => {
 
 const ALLOWED_PRINT_ENDPOINTS = new Set(['print-receipt', 'print-fiscal', 'print-closing'])
 
-const TRUSTED_POS_ORIGINS = new Set(['https://titimenu.com', 'https://www.titimenu.com'])
-
 /**
  * ¿La llamada viene de la página del POS y no de cualquier cosa que haya acabado
  * cargándose en esa ventana (un iframe de terceros, una navegación a otro sitio, un
@@ -866,9 +1023,7 @@ app.whenReady().then(async () => {
   if (app.dock) app.dock.hide()
 
   createTray()
-
-  // Always open config window on startup
-  createConfigWindow()
+  configurePosSession()
 
   // Credencial del EQUIPO (Opción B). init antes de cualquier canje: necesita el store y el
   // logger, y safeStorage solo está disponible con la app lista.
@@ -882,6 +1037,16 @@ app.whenReady().then(async () => {
       }
     },
   })
+
+  // Qué ventana abre la app. La decisión va DESPUÉS de `bridgeAuth.init` porque
+  // `hasCredential()` no sabe nada antes de eso. Equipo registrado + impresora activa
+  // → directo al POS, que es a lo que se viene; si falta algo, a la configuración,
+  // que es donde se arregla.
+  if (isPosReady()) {
+    createPosWindow()
+  } else {
+    createConfigWindow()
+  }
 
   if (bridgeAuth.hasCredential()) {
     await startAuthenticatedListening()
