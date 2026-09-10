@@ -243,6 +243,10 @@ function createShellWindow() {
 
   shellWindow.loadFile(path.join(__dirname, 'renderer', 'shell.html'))
   shellWindow.once('ready-to-show', () => shellWindow.show())
+  // El estado se reenvía en cuanto el armazón termina de cargar. Sin esto, un
+  // `pushShellState` disparado antes de que el renderer estuviera escuchando se perdía
+  // en silencio y la barra se quedaba con lo que hubiera.
+  shellWindow.webContents.on('did-finish-load', pushShellState)
   shellWindow.on('resize', layoutPosView)
   shellWindow.on('closed', () => {
     destroyPosView()
@@ -325,12 +329,21 @@ function openRole(role) {
     return { action: 'deny' }
   })
 
-  // Atajo estándar a la configuración, capturado antes de que lo vea la página.
+  // Atajos capturados en el MARCO, antes de que los vea la página remota. Son la
+  // salida de emergencia: funcionan aunque la barra de arriba fallara, porque viven en
+  // el proceso principal y no dependen de que el armazón haya pintado nada.
+  //   Cmd/Ctrl + ,        → impresoras y configuración
+  //   Cmd/Ctrl + Shift+H  → volver a la pantalla de inicio
   wc.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown') return
     const modifier = process.platform === 'darwin' ? input.meta : input.control
-    if (modifier && input.key === ',' && input.type === 'keyDown') {
+    if (!modifier) return
+    if (input.key === ',') {
       event.preventDefault()
       createConfigWindow()
+    } else if (input.shift && (input.key === 'H' || input.key === 'h')) {
+      event.preventDefault()
+      goHome()
     }
   })
 

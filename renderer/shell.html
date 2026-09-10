@@ -15,9 +15,15 @@
       user-select: none;
     }
 
-    /* ── Barra superior: la que queda ENCIMA del POS ── */
+    /* ── Barra superior ──
+       SIEMPRE presente, tanto en inicio como sobre el POS. Antes aparecía sólo en
+       modo "embebido" y el botón de volver no se veía: quedaba en manos de que un
+       mensaje del proceso principal llegara y de que el usuario distinguiera una
+       franja oscura sobre una página oscura. Ahora la franja no se negocia y el botón
+       falla hacia VISIBLE — si el estado no llegara, se ve un botón de más en inicio
+       (inofensivo, ahí no hace nada) en vez de ninguno donde hace falta. */
     #bar {
-      display: none;
+      display: flex;
       height: 44px;
       align-items: center;
       gap: 12px;
@@ -25,21 +31,24 @@
       background: #121212;
       border-bottom: 1px solid rgba(255,255,255,0.08);
       -webkit-app-region: drag;
+      flex-shrink: 0;
     }
-    body.embedded #bar { display: flex; }
 
-    #bar button {
+    /* El botón de volver: color de acento y tamaño de dedo. Es la salida del POS y
+       tiene que leerse de un vistazo desde el otro lado del mostrador. */
+    #back {
       -webkit-app-region: no-drag;
-      background: rgba(255,255,255,0.06);
-      border: 1px solid rgba(255,255,255,0.12);
-      color: #fff;
-      font-size: 13px;
-      font-weight: 600;
-      padding: 6px 14px;
-      border-radius: 8px;
+      background: #f6ad55;
+      border: none;
+      color: #1a1a1a;
+      font-size: 14px;
+      font-weight: 800;
+      padding: 9px 18px;
+      border-radius: 9px;
       cursor: pointer;
     }
-    #bar button:hover { background: rgba(255,255,255,0.12); }
+    #back:hover { background: #fbc47c; }
+    body.at-home #back { display: none; }
 
     #who { font-size: 13px; font-weight: 700; }
     /* El DOMINIO, visible. Si la sesión caduca y aparece /login, tiene que verse que
@@ -56,7 +65,7 @@
 
     /* ── Pantalla de inicio ── */
     #home {
-      height: 100vh;
+      height: calc(100vh - 44px);
       display: flex;
       flex-direction: column;
       align-items: center;
@@ -64,7 +73,9 @@
       padding: 32px;
       gap: 28px;
     }
-    body.embedded #home { display: none; }
+    /* Con el POS montado, el BrowserView tapa todo menos la barra; ocultar esto evita
+       que asome por detrás si el ajuste de tamaño llega tarde. */
+    body:not(.at-home) #home { display: none; }
 
     #brand { text-align: center; }
     #brand h1 { font-size: 30px; letter-spacing: -0.5px; }
@@ -107,7 +118,8 @@
 <body>
   <div id="bar">
     <button id="back">← Inicio</button>
-    <span id="who"></span>
+    <span id="dot"></span>
+    <span id="who">TitiMenu</span>
     <span id="origin"></span>
   </div>
 
@@ -164,9 +176,13 @@
         ? 'Conectado — imprimiendo pedidos automáticamente'
         : 'Sin conexión — no se imprimirán pedidos automáticos'
 
-      document.body.classList.toggle('embedded', !!state.embedded)
+      // Sólo se marca "en inicio" cuando el proceso principal lo dice explícitamente.
+      // Cualquier otra cosa (estado ausente, mensaje perdido) deja el botón de volver
+      // a la vista, que es el lado seguro del fallo.
+      document.body.classList.toggle('at-home', state.embedded !== 'owner' && state.embedded !== 'staff')
       $('who').textContent = state.embedded === 'owner' ? 'Dueño'
-        : state.embedded === 'staff' ? 'Empleado' : ''
+        : state.embedded === 'staff' ? 'Empleado'
+        : (state.businessName || 'TitiMenu')
       $('origin').textContent = state.origin || ''
     }
 
