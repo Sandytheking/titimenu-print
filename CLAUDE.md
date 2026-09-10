@@ -1,13 +1,51 @@
-# TitiMenu Print Bridge (Electron/PC) — contexto para Claude Code
+# TitiMenu (Electron/PC) — contexto para Claude Code
 
-Bridge de impresión para PC: servidor HTTP local (puerto 3001) que recibe trabajos
-de impresión de la PWA (menuqr) y los manda a una impresora térmica USB vía ESC/POS
-(`node-thermal-printer`). Contraparte de TitiPrint (Android, impresora de RED).
+**Desde la 2.0.0 ya no es sólo un bridge de impresión: es la app de escritorio de
+TitiMenu.** Carga el POS web REAL (titimenu.com) dentro de su ventana y le imprime por
+IPC, además de seguir siendo el servidor HTTP local y el oyente de realtime de siempre.
+El producto se llama **TitiMenu** (`build.productName`); el `name` del package y el
+`appId` conservan a propósito el nombre viejo — ver «El renombrado» abajo.
 
-- `main.js` — servidor HTTP + endpoints (`/status`, `/print-receipt`, `/print-fiscal`, …),
-  auto-updater, sondeo de Supabase para auto-impresión de pedidos nuevos.
+- `main.js` — armazón (pantalla de inicio + BrowserView del POS), servidor HTTP
+  (`/status`, `/print-receipt`, …), IPC del POS, realtime para auto-impresión.
 - `printer.js` — renderers ESC/POS: `printPOSReceipt`, `printDeliveryTicket`,
   `printTableComanda`, `printFiscalReceipt`, kitchen/bar comanda, closing.
+- `printQueue.js` — tope de la cola del spooler del sistema.
+- **Tres preloads, tres superficies, NO se mezclan:** `preload.js` (config, privilegiado,
+  contenido local), `preload-pos.js` (SÓLO `getStatus` + `printJob`, contenido REMOTO) y
+  `preload-shell.js` (armazón, contenido local).
+
+## Backlog — auto-update, notarización y firma
+**La auto-actualización está APAGADA a propósito** (`AUTO_UPDATE_ENABLED = false` en
+`main.js`). No está rota: está desconectada, y el código se dejó inerte para poder
+reactivarlo entero cuando toque.
+
+Por qué: en macOS el auto-update exige app **firmada Y notarizada** por Apple (99 USD/año
++ trámite); sin eso el reemplazo del bundle falla en silencio —el diálogo explicativo de
+`handleQuitAndInstall` existe porque ya pasó— y Gatekeeper además bloquea la primera
+apertura. En Windows haría falta un certificado de firma (100-300 USD/año) y aun así
+SmartScreen avisa.
+
+Mientras tanto, **distribución MANUAL**, igual que el APK: se publica el release en
+GitHub y el cliente descarga de `/descargar`. El botón «Descargar última versión» de la
+config abre esa página en el navegador en vez de prometer una búsqueda que no podría
+instalar nada.
+
+**Cuándo reactivarlo:** cuando haya volumen de clientes de PC que justifique el gasto y
+el trámite. Al hacerlo va TODO junto: notarización Mac + firma Windows + volver a poner
+`AUTO_UPDATE_ENABLED = true`. Reactivar el auto-update sin firmar es peor que no
+tenerlo: descarga algo que no se puede instalar.
+
+## El renombrado (2.0.0) — qué NO se puede tocar
+`build.productName` pasó a **TitiMenu**, pero **`name` (`titimenu-print-bridge`) y
+`appId` (`com.titimenu.printbridge`) NO se tocan, y no es cosmético**:
+- De `name` salen la ruta de `userData`
+  (`~/Library/Application Support/titimenu-print-bridge`) **y** el item del llavero
+  (`titimenu-print-bridge Safe Storage`) que descifra `bridgeDeviceToken`. Cambiarlo
+  dejaría a cada cliente instalado con el store vacío: equipo sin registrar, impresora
+  sin elegir y credencial imposible de descifrar. Silencioso y masivo.
+- De `appId` depende que NSIS reconozca la instalación previa y actualice ENCIMA en vez
+  de instalarse al lado.
 
 ## Ruteo de `/print-receipt`
 El POST rutea por `order_type` del payload: `delivery`/`takeout` → `printDeliveryTicket`

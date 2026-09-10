@@ -62,8 +62,25 @@ function handleQuitAndInstall() {
 
 // ─── Auto-updater ─────────────────────────────────────────────────────────────
 
-autoUpdater.autoDownload = true
-autoUpdater.autoInstallOnAppQuit = true
+// ⚠️ AUTO-ACTUALIZACIÓN DESACTIVADA A PROPÓSITO (2.0.0). No está rota: está apagada.
+//
+// En macOS el auto-update exige que la app esté FIRMADA Y NOTARIZADA por Apple (99
+// USD/año más el trámite). Sin eso, el reemplazo del bundle falla en silencio —el
+// diálogo de `handleQuitAndInstall` existe justamente porque ya nos pasó— y encima
+// Gatekeeper bloquea la primera apertura. En Windows haría falta un certificado de
+// firma (100-300 USD/año) y aun así SmartScreen avisa.
+//
+// Con la base de clientes de PC de hoy, la distribución MANUAL —publicar la versión y
+// que el cliente descargue de /descargar— es lo correcto, igual que con el APK. El
+// código se deja INERTE, no se borra: cuando el volumen lo justifique, esto se
+// reactiva junto con la notarización y la firma. Ver el backlog en CLAUDE.md.
+const AUTO_UPDATE_ENABLED = false
+
+autoUpdater.autoDownload = AUTO_UPDATE_ENABLED
+autoUpdater.autoInstallOnAppQuit = AUTO_UPDATE_ENABLED
+
+/** Página oficial de descargas — el camino real de actualización de la 2.0. */
+const DOWNLOADS_URL = 'https://titimenu.com/descargar'
 
 autoUpdater.on('checking-for-update', () => {
   sendLog('Buscando actualizaciones...')
@@ -1005,6 +1022,14 @@ ipcMain.handle('reset-config', () => {
 })
 
 ipcMain.handle('check-for-updates', async () => {
+  // Con la auto-actualización apagada, el botón hace lo ÚNICO que puede funcionar hoy:
+  // abrir la página de descargas en el navegador. Prometer una búsqueda que no puede
+  // instalar nada sería peor que no ofrecerla — el cliente se quedaría esperando.
+  if (!AUTO_UPDATE_ENABLED) {
+    shell.openExternal(DOWNLOADS_URL).catch(() => {})
+    sendLog('Abriendo la página de descargas para actualizar a mano.')
+    return { success: true, manual: true }
+  }
   try {
     sendLog('Iniciando búsqueda manual de actualizaciones...')
     const result = await autoUpdater.checkForUpdatesAndNotify()
@@ -1160,6 +1185,11 @@ app.whenReady().then(async () => {
   }
 
   await startHttpServer()
+
+  // Sondeos de actualización: sólo si la auto-actualización está encendida (hoy NO,
+  // ver la cabecera del updater). Sin firma ni notarización, buscar actualizaciones
+  // sólo sirve para descargar algo que no se va a poder instalar.
+  if (!AUTO_UPDATE_ENABLED) return
 
   setTimeout(() => {
     try { autoUpdater.checkForUpdatesAndNotify() } catch (e) { sendLog(`Error de actualización: ${e.message}`) }
