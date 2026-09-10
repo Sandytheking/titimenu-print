@@ -15,26 +15,37 @@ El producto se llama **TitiMenu** (`build.productName`); el `name` del package y
   contenido local), `preload-pos.js` (SÓLO `getStatus` + `printJob`, contenido REMOTO) y
   `preload-shell.js` (armazón, contenido local).
 
-## Backlog — auto-update, notarización y firma
-**La auto-actualización está APAGADA a propósito** (`AUTO_UPDATE_ENABLED = false` en
-`main.js`). No está rota: está desconectada, y el código se dejó inerte para poder
-reactivarlo entero cuando toque.
+## Auto-actualización — condicional por plataforma, y el `latest.yml` que hay que subir
+`CAN_SELF_INSTALL = process.platform === 'win32'` en `main.js`. **Se COMPRUEBA en las dos
+plataformas; sólo se INSTALA sola en Windows.**
 
-Por qué: en macOS el auto-update exige app **firmada Y notarizada** por Apple (99 USD/año
-+ trámite); sin eso el reemplazo del bundle falla en silencio —el diálogo explicativo de
-`handleQuitAndInstall` existe porque ya pasó— y Gatekeeper además bloquea la primera
-apertura. En Windows haría falta un certificado de firma (100-300 USD/año) y aun así
-SmartScreen avisa.
+- **Windows:** completa. NSIS instala sin certificado de firma; sin firmar sólo sale el
+  aviso de SmartScreen, que se salta. El certificado (100-300 USD/año) queda para cuando
+  haya volumen.
+- **macOS:** NO descarga ni instala. Sin notarización de Apple (99 USD/año + trámite)
+  Squirrel falla en silencio al reemplazar el bundle — el diálogo explicativo de
+  `handleQuitAndInstall` existe porque ya pasó.
+- **Pero en Mac SÍ se comprueba y se avisa**, y esa distinción es el punto: comprobar es
+  una petición HTTP y funciona sin firmar; lo que no funciona es instalar. Si se apagara
+  todo, el usuario de Mac no tendría NINGUNA forma de enterarse de que hay versión nueva.
+  Se le notifica y se le lleva a `/descargar`. **No apagues el sondeo en Mac "porque no
+  puede instalar": el aviso es justamente lo que sí puede.**
 
-Mientras tanto, **distribución MANUAL**, igual que el APK: se publica el release en
-GitHub y el cliente descarga de `/descargar`. El botón «Descargar última versión» de la
-config abre esa página en el navegador en vez de prometer una búsqueda que no podría
-instalar nada.
+**⚠️ AL PUBLICAR UN RELEASE HAY QUE SUBIR EL FEED, no sólo los instaladores.**
+`electron-updater` no lee la lista de releases de GitHub: pide `latest.yml` (Windows) y
+`latest-mac.yml` (macOS) de los adjuntos. Sin ellos **no hay auto-update de ninguna
+clase**, ni siquiera la comprobación — y no se nota al probar la app, sólo el día que
+alguien espera una actualización que nunca llega. Pasó en la primera subida de la 2.0.0:
+se subieron los tres instaladores y ni un `.yml`.
+Los `.blockmap` también van: sin ellos Windows descarga la actualización entera en vez
+de sólo lo cambiado.
+Y los `.yml` llevan el **sha512 del binario**, así que si se recompila hay que volver a
+subir binarios Y feed **juntos** (`gh release upload --clobber`); un feed que no cuadra
+con el instalador hace fallar la actualización con un error de checksum.
 
-**Cuándo reactivarlo:** cuando haya volumen de clientes de PC que justifique el gasto y
-el trámite. Al hacerlo va TODO junto: notarización Mac + firma Windows + volver a poner
-`AUTO_UPDATE_ENABLED = true`. Reactivar el auto-update sin firmar es peor que no
-tenerlo: descarga algo que no se puede instalar.
+**Backlog:** notarización Mac + firma Windows, cuando el volumen de clientes de PC lo
+justifique. Al notarizar, macOS pasa a poder instalar solo y `CAN_SELF_INSTALL` deja de
+tener sentido.
 
 ## El renombrado (2.0.0) — qué NO se puede tocar
 `build.productName` pasó a **TitiMenu**, pero **`name` (`titimenu-print-bridge`) y

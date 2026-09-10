@@ -62,25 +62,44 @@ function handleQuitAndInstall() {
 
 // ─── Auto-updater ─────────────────────────────────────────────────────────────
 
-// ⚠️ AUTO-ACTUALIZACIÓN DESACTIVADA A PROPÓSITO (2.0.0). No está rota: está apagada.
+// ⚠️ AUTO-ACTUALIZACIÓN: CONDICIONAL POR PLATAFORMA. Se COMPRUEBA en las dos, pero
+// sólo se INSTALA sola en Windows.
 //
-// En macOS el auto-update exige que la app esté FIRMADA Y NOTARIZADA por Apple (99
-// USD/año más el trámite). Sin eso, el reemplazo del bundle falla en silencio —el
-// diálogo de `handleQuitAndInstall` existe justamente porque ya nos pasó— y encima
-// Gatekeeper bloquea la primera apertura. En Windows haría falta un certificado de
-// firma (100-300 USD/año) y aun así SmartScreen avisa.
+// Windows — completa, como siempre. NSIS instala actualizaciones sin certificado de
+// firma; lo único que pasa sin firmar es el aviso de SmartScreen, que se salta. El
+// certificado queda para cuando haya volumen.
 //
-// Con la base de clientes de PC de hoy, la distribución MANUAL —publicar la versión y
-// que el cliente descargue de /descargar— es lo correcto, igual que con el APK. El
-// código se deja INERTE, no se borra: cuando el volumen lo justifique, esto se
-// reactiva junto con la notarización y la firma. Ver el backlog en CLAUDE.md.
-const AUTO_UPDATE_ENABLED = false
+// macOS — NO se descarga ni se instala. Sin notarización de Apple (99 USD/año más el
+// trámite), Squirrel falla en silencio al reemplazar el bundle: el diálogo explicativo
+// de `handleQuitAndInstall` existe justamente porque ya nos pasó. Intentarlo sólo sirve
+// para gastar 95 MB y frustrar al cliente.
+//
+// PERO EN MAC SÍ SE COMPRUEBA Y SE AVISA, y esa distinción es el punto: comprobar es
+// una petición HTTP y funciona perfectamente sin firmar; lo que no funciona es
+// instalar. Si sólo se apagara todo, el usuario de Mac no tendría NINGUNA forma de
+// enterarse de que existe una versión nueva. Se le notifica y se le manda a
+// /descargar, que es su camino real.
+const CAN_SELF_INSTALL = process.platform === 'win32'
 
-autoUpdater.autoDownload = AUTO_UPDATE_ENABLED
-autoUpdater.autoInstallOnAppQuit = AUTO_UPDATE_ENABLED
+autoUpdater.autoDownload = CAN_SELF_INSTALL
+autoUpdater.autoInstallOnAppQuit = CAN_SELF_INSTALL
 
-/** Página oficial de descargas — el camino real de actualización de la 2.0. */
+/** Página oficial de descargas — el camino de actualización en Mac. */
 const DOWNLOADS_URL = 'https://titimenu.com/descargar'
+
+/** Versión nueva detectada, o null. La fijan los eventos del updater. */
+let availableVersion = null
+
+/** Comprobación de actualizaciones. En Windows además descarga; en Mac sólo mira. */
+function runUpdateCheck() {
+  try {
+    if (CAN_SELF_INSTALL) return autoUpdater.checkForUpdatesAndNotify()
+    return autoUpdater.checkForUpdates()   // autoDownload=false → sólo comprueba
+  } catch (e) {
+    sendLog(`Error de actualización: ${e.message}`)
+    return Promise.resolve(null)
+  }
+}
 
 autoUpdater.on('checking-for-update', () => {
   sendLog('Buscando actualizaciones...')
@@ -88,15 +107,21 @@ autoUpdater.on('checking-for-update', () => {
 })
 
 autoUpdater.on('update-available', (info) => {
+  availableVersion = info.version
   sendLog(`Nueva versión disponible: v${info.version}`)
   sendUpdateStatus('available', info)
   new Notification({
     title: 'TitiMenu',
-    body: `Descargando actualización v${info.version}`
+    // En Mac no se descarga nada, así que el aviso NO puede decir "descargando": tiene
+    // que decirle al cliente qué hacer, que es ir a la página y bajarla a mano.
+    body: CAN_SELF_INSTALL
+      ? `Descargando actualización v${info.version}`
+      : `Hay una versión nueva (v${info.version}). Descárgala en titimenu.com/descargar`
   }).show()
 })
 
 autoUpdater.on('update-not-available', () => {
+  availableVersion = null
   sendLog('TitiMenu está actualizado')
   sendUpdateStatus('not-available')
 })
@@ -1022,18 +1047,16 @@ ipcMain.handle('reset-config', () => {
 })
 
 ipcMain.handle('check-for-updates', async () => {
-  // Con la auto-actualización apagada, el botón hace lo ÚNICO que puede funcionar hoy:
-  // abrir la página de descargas en el navegador. Prometer una búsqueda que no puede
-  // instalar nada sería peor que no ofrecerla — el cliente se quedaría esperando.
-  if (!AUTO_UPDATE_ENABLED) {
-    shell.openExternal(DOWNLOADS_URL).catch(() => {})
-    sendLog('Abriendo la página de descargas para actualizar a mano.')
-    return { success: true, manual: true }
-  }
   try {
     sendLog('Iniciando búsqueda manual de actualizaciones...')
-    const result = await autoUpdater.checkForUpdatesAndNotify()
-    return { success: true, updateInfo: result?.updateInfo }
+    const result = await runUpdateCheck()
+    // En Mac, encontrar una versión nueva no sirve de nada por sí solo: hay que llevar
+    // al cliente a donde puede bajarla. Sólo se abre si de verdad hay algo nuevo.
+    if (!CAN_SELF_INSTALL && availableVersion) {
+      shell.openExternal(DOWNLOADS_URL).catch(() => {})
+      sendLog(`Abriendo la página de descargas para instalar la v${availableVersion} a mano.`)
+    }
+    return { success: true, updateInfo: result?.updateInfo, manual: !CAN_SELF_INSTALL }
   } catch (err) {
     sendLog(`Error en búsqueda manual: ${err.message}`)
     return { success: false, error: err.message }
@@ -1186,19 +1209,12 @@ app.whenReady().then(async () => {
 
   await startHttpServer()
 
-  // Sondeos de actualización: sólo si la auto-actualización está encendida (hoy NO,
-  // ver la cabecera del updater). Sin firma ni notarización, buscar actualizaciones
-  // sólo sirve para descargar algo que no se va a poder instalar.
-  if (!AUTO_UPDATE_ENABLED) return
-
-  setTimeout(() => {
-    try { autoUpdater.checkForUpdatesAndNotify() } catch (e) { sendLog(`Error de actualización: ${e.message}`) }
-  }, 10000)
+  // Sondeos de actualización en LAS DOS plataformas: en Windows descargan e instalan,
+  // en Mac sólo avisan de que hay versión nueva (ver la cabecera del updater).
+  setTimeout(runUpdateCheck, 10000)
 
   // Verificación cada 24 horas (como solicitó el usuario)
-  setInterval(() => {
-    try { autoUpdater.checkForUpdatesAndNotify() } catch (e) { sendLog(`Error de actualización: ${e.message}`) }
-  }, 24 * 60 * 60 * 1000)
+  setInterval(runUpdateCheck, 24 * 60 * 60 * 1000)
 })
 
 // CERRAR LA VENTANA = CERRAR LA APP, en todas las plataformas (también en macOS, donde
