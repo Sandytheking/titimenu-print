@@ -140,6 +140,124 @@ function formatTime(dateStr) {
 // resta ANTES de dividir —la propina queda FUERA de la base imponible por la DGII— y el
 // envío se queda dentro (Reglamento 293-11 art. 10). Los pedidos del POS y del menú no
 // llevan propina, así que en la práctica el gravable es el total.
+/**
+ * Código QR nativo de la impresora: `GS ( k`, modelo 2, corrección M.
+ *
+ * ## Es una COPIA DELIBERADA de `EscPosCommands.qr` del módulo compartido Kotlin
+ * Mismos bytes, mismos defaults (tamaño 5, ecc 50 = 'M'), mismo orden de instrucciones.
+ * No se usa `printer.printQR()` de node-thermal-printer a propósito: sería una SEGUNDA
+ * implementación con otros parámetros, y entonces el QR de la misma factura saldría
+ * distinto según se imprimiera desde TitiStaff o desde aquí. Es exactamente la clase de
+ * divergencia que el módulo compartido existe para impedir, y en un documento fiscal.
+ * **Si se toca allá, se toca aquí.**
+ *
+ * El largo de la instrucción de datos (`fn=80`) es `pL + pH*256` y cuenta los datos
+ * **MÁS 3 bytes** (cn, fn, m). Olvidar el +3 deja a la impresora esperando bytes que no
+ * llegan.
+ *
+ * La URL va en UTF-8 sin sanear: son datos del QR, no texto que la impresora dibuje con
+ * su code page. Sanearla cambiaría la URL y el QR apuntaría a otro sitio.
+ */
+function qrGsK(data, size = 5, ecc = 50) {
+  const bytes = Buffer.from(String(data), 'utf8')
+  const largo = bytes.length + 3
+  const pL = largo % 256
+  const pH = Math.floor(largo / 256)
+  return Buffer.concat([
+    Buffer.from([0x1D, 0x28, 0x6B, 0x04, 0x00, 0x31, 0x41, 0x32, 0x00]),            // modelo 2
+    Buffer.from([0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x43, Math.min(16, Math.max(1, size))]),
+    Buffer.from([0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x45, Math.min(51, Math.max(48, ecc))]),
+    Buffer.from([0x1D, 0x28, 0x6B, pL, pH, 0x31, 0x50, 0x30]),                      // datos
+    bytes,
+    Buffer.from([0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x51, 0x30]),                  // imprimir
+  ])
+}
+
+/**
+ * Normaliza el payload fiscal: **la representación manda si viene**.
+ *
+ * ## Por qué hay dos caminos y no uno
+ * El web manda desde octubre de 2026 un campo `representacion` con el documento que la
+ * DGII certificó, y además sigue mandando los campos planos de siempre. Un bridge viejo
+ * no sabe de `representacion` y sigue funcionando; éste la prefiere, y con ella saca QR,
+ * código de seguridad y fecha de firma.
+ *
+ * Detalle que importa: los campos planos que manda el web ya vienen **rellenados desde la
+ * representación**, no recalculados. Así que incluso por el camino viejo los números son
+ * los del XML (932.21, no 932.20) y el envío aparece como línea. Lo único que se pierde
+ * sin la representación es el sello.
+ *
+ * Los importes de la representación se escriben **tal cual, en texto**: son los del
+ * documento legal. Aquí NO se hace `total / 1.18` ni ninguna otra cuenta — ése era el bug.
+ */
+function fiscalDesdeRepresentacion(data) {
+  const rep = data && data.representacion ? data.representacion : null
+  if (!rep) return null
+  const t = rep.totales || {}
+  const conQr = !!(rep.qr_url && rep.codigo_seguridad && rep.fecha_firma)
+  const rechazada = ['rechazado', 'rechazado_esquema', 'requiere_revision'].includes(rep.estado)
+  return {
+    rep,
+    conQr,
+    rechazada,
+    titulo: rep.tipo_nombre || 'COMPROBANTE FISCAL',
+    encf: rep.encf || '',
+    emisorNombre: rep.emisor_nombre || rep.nombre_comercial || '',
+    nombreComercial: rep.nombre_comercial || '',
+    emisorRnc: rep.emisor_rnc || '',
+    emisorDireccion: rep.emisor_direccion || '',
+    fechaEmision: rep.fecha_emision || '',
+    venceSecuencia: rep.vence_secuencia || '',
+    compradorNombre: rep.comprador_nombre || '',
+    compradorRnc: rep.comprador_rnc || '',
+    lineas: (rep.lineas || []).map(l => ({
+      // '1.00' se escribe '1': el XML siempre manda dos decimales y en 32 caracteres
+      // son dos tirados por línea.
+      cantidad: l.cantidad && String(l.cantidad).endsWith('.00')
+        ? String(l.cantidad).slice(0, -3) : (l.cantidad || ''),
+      nombre: l.nombre || '',
+      descuento: l.descuento || '',
+      monto: l.monto || '',
+    })),
+    gravado: t.gravado || '',
+    itbis: t.itbis || '',
+    exento: t.exento || '',
+    propina: t.propina || '',
+    total: t.total || '',
+  }
+}
+
+/**
+ * Los datos LOCALES de la venta, para el papel que sale ANTES de que la DGII firme.
+ *
+ * Cuando el comprobante no está certificado la representación trae sólo el estado, el eNCF
+ * y el nombre del tipo: sin XML no hay emisor, ni líneas, ni totales. Con eso el papel
+ * salía casi vacío y el cliente se iba sin saber qué compró.
+ *
+ * Lo mandan el web (`payloadFiscal`) y TitiStaff (`bridgeEcfJson`) con estas mismas
+ * claves. **Sin base ni ITBIS a propósito**: los calcula la DGII por línea y sólo existen
+ * en el XML — salen al reimprimir. Y nunca la leyenda del recibo normal: este papel SÍ es
+ * un comprobante fiscal, lo que le falta es el sello.
+ */
+function respaldoFiscal(data) {
+  const r = data && data.respaldo ? data.respaldo : null
+  if (!r) return null
+  return {
+    negocioNombre: r.negocio_nombre || '',
+    negocioRnc: r.negocio_rnc || '',
+    negocioDireccion: r.negocio_direccion || '',
+    fecha: r.fecha || '',
+    items: (r.items || []).map(i => ({
+      name: i.name || '',
+      qty: i.qty != null ? i.qty : 1,
+      subtotal: i.subtotal != null ? i.subtotal : 0,
+    })),
+    envio: r.envio != null && r.envio > 0 ? r.envio : null,
+    descuento: r.descuento != null && r.descuento > 0 ? r.descuento : null,
+    total: r.total != null ? r.total : 0,
+  }
+}
+
 function taxBreakdownLines(order, businessInfo, currency, total) {
   let base = order.tax_base != null ? parseFloat(order.tax_base) : null
   let itbis = order.itbis != null ? parseFloat(order.itbis) : null
@@ -654,6 +772,7 @@ function generatePOSReceiptHTML(order, businessInfo, paperWidth) {
     
     <div class="footer center">
       ¡Gracias por su visita!
+      <div>Este documento no es un comprobante fiscal</div>
     </div>
   `
 
@@ -839,7 +958,101 @@ function generateDeliveryTicketHTML(order, businessInfo, paperWidth) {
   return getBaseHTML(getReceiptStyles(paperWidth), bodyContent)
 }
 
-function generateFiscalReceiptHTML(data, paperWidth) {
+async function generateFiscalReceiptHTML(data, paperWidth) {
+  // ── CAMINO NUEVO: la representación del e-CF certificado ─────────────────
+  // Mismo contenido y mismo orden que la rama térmica de `printFiscalReceipt` y que
+  // `TicketBuilder.buildEcf` del módulo compartido: los tres pintan la misma
+  // representación, así que el papel dice lo mismo salga por donde salga.
+  const F = fiscalDesdeRepresentacion(data)
+  if (F) {
+    if (F.rechazada) {
+      throw new Error('La DGII no aceptó este comprobante: no se puede imprimir como factura fiscal')
+    }
+    const cur = data.currency || store.get('businessCurrency', 'RD$')
+    // El QR como <img> en base64. `qrcode` se carga aquí y no arriba: sólo lo necesita
+    // este camino, y es el único del bridge que lo usa.
+    let qrImg = ''
+    if (F.conQr) {
+      try {
+        const QRCode = require('qrcode')
+        // La URL TAL CUAL: es la que la DGII firmó.
+        const url = await QRCode.toDataURL(F.rep.qr_url, {
+          margin: 1, errorCorrectionLevel: 'M', width: 150,
+        })
+        qrImg = `<img src="${url}" style="width:150px;height:150px;" alt="QR DGII">`
+      } catch (e) {
+        // Sin QR se imprime igual: el código de seguridad en texto permite la consulta
+        // manual en el portal. Quedarse sin papel sería peor.
+        console.warn('[printer] no se pudo generar el QR:', e.message)
+      }
+    }
+
+    const R = respaldoFiscal(data)
+    // Sin XML todavía: el cuerpo se arma con los datos de la venta. Ver `respaldoFiscal`.
+    const soloRespaldo = F.lineas.length === 0 && !F.total && !!R
+    const bodyRep = `
+    <div class="header center">
+      <div class="business-name">${F.emisorNombre || (R ? R.negocioNombre : '')}</div>
+      ${F.nombreComercial && F.nombreComercial !== F.emisorNombre
+        ? `<div class="business-details">${F.nombreComercial}</div>` : ''}
+      ${(F.emisorRnc || (R ? R.negocioRnc : '')) ? `<div class="business-details">RNC: ${F.emisorRnc || R.negocioRnc}</div>` : ''}
+      ${(F.emisorDireccion || (R ? R.negocioDireccion : '')) ? `<div class="business-details">${F.emisorDireccion || R.negocioDireccion}</div>` : ''}
+      <div class="divider" style="margin: 8px 0 4px;"></div>
+      <div class="bold" style="font-size: 1.1em;">${F.titulo}</div>
+      <div class="tag" style="font-size: 1.15em; margin: 3px 0;">${F.encf}</div>
+    </div>
+    <div class="divider"></div>
+    <table class="totals-table"><tbody>
+      ${(F.fechaEmision || (R ? R.fecha : '')) ? `<tr><td>Fecha emisión:</td><td class="right">${F.fechaEmision || R.fecha}</td></tr>` : ''}
+      ${F.venceSecuencia ? `<tr><td>Vence secuencia:</td><td class="right">${F.venceSecuencia}</td></tr>` : ''}
+      ${F.compradorNombre ? `<tr><td>Cliente:</td><td class="right">${F.compradorNombre}</td></tr>` : ''}
+      ${F.compradorRnc ? `<tr><td>RNC/Cédula:</td><td class="right">${F.compradorRnc}</td></tr>` : ''}
+    </tbody></table>
+    <div class="divider"></div>
+    <table class="items-table">
+      <thead><tr><th>Descripción</th><th class="right">Total</th></tr></thead>
+      <tbody>
+        ${soloRespaldo ? R.items.map(i => `
+        <tr><td>${i.qty}x ${i.name}</td><td class="right">${cur}${formatMoney(i.subtotal)}</td></tr>`).join('') : ''}
+        ${F.lineas.map(l => `
+        <tr>
+          <td>${l.cantidad ? `${l.cantidad}x ` : ''}${l.nombre}</td>
+          <td class="right">${cur}${l.monto}</td>
+        </tr>` + (l.descuento ? `
+        <tr><td style="padding-left:10px;">Descuento</td>
+            <td class="right">-${cur}${l.descuento}</td></tr>` : '')).join('')}
+      </tbody>
+    </table>
+    <div class="divider"></div>
+    <table class="totals-table"><tbody>
+      ${soloRespaldo && R.descuento ? `<tr><td>Descuento:</td><td class="right">-${cur}${formatMoney(R.descuento)}</td></tr>` : ''}
+      ${soloRespaldo && R.envio ? `<tr><td>Envío:</td><td class="right">${cur}${formatMoney(R.envio)}</td></tr>` : ''}
+      ${F.gravado ? `<tr><td>Base Imponible:</td><td class="right">${cur}${F.gravado}</td></tr>` : ''}
+      ${F.itbis ? `<tr><td>ITBIS (18%):</td><td class="right">${cur}${F.itbis}</td></tr>` : ''}
+      ${F.exento ? `<tr><td>Monto exento:</td><td class="right">${cur}${F.exento}</td></tr>` : ''}
+      ${F.propina ? `<tr><td>Propina legal (10%):</td><td class="right">+${cur}${F.propina}</td></tr>` : ''}
+      <tr class="bold text-medium" style="border-top: 1px solid #000;">
+        <td style="padding-top: 4px;">TOTAL:</td>
+        <td class="right" style="padding-top: 4px;">${soloRespaldo ? cur + formatMoney(R.total) : cur + F.total}</td>
+      </tr>
+    </tbody></table>
+    <div class="divider-double"></div>
+    <div class="footer center">
+      ${F.conQr ? `
+        <div class="business-details">Código de seguridad: ${F.rep.codigo_seguridad}</div>
+        <div class="business-details">Fecha de firma: ${F.rep.fecha_firma}</div>
+        <div style="margin:8px 0;">${qrImg}</div>
+        <div class="business-details">Consulte este comprobante en la<br>DGII escaneando el código QR</div>
+      ` : `
+        <div class="bold">Comprobante en proceso de<br>validación ante la DGII</div>
+      `}
+      <div style="margin-top:6px;">¡Gracias por su visita!</div>
+    </div>
+  `
+    return getBaseHTML(getReceiptStyles(paperWidth), bodyRep)
+  }
+
+  // ── CAMINO VIEJO: payload sin `representacion` ───────────────────────────
   const bizName = data.business_name || 'MI NEGOCIO'
   const legalName = data.legal_name || ''
   const rnc = data.rnc || ''
@@ -1098,6 +1311,10 @@ async function printPOSReceipt(order, printerName, businessInfo) {
     ...(orderNotes ? [`Nota: ${orderNotes}`] : []),
     LINE,
     center('¡Gracias por su visita!', W),
+    // No es un comprobante fiscal: el que lo es lleva eNCF y lo imprime
+    // printFiscalReceipt, donde esta línea NO debe aparecer.
+    center('Este documento no es un', W),
+    center('comprobante fiscal', W),
     LINE,
     '[CORTE]'
   ]
@@ -1163,6 +1380,8 @@ async function printPOSReceipt(order, printerName, businessInfo) {
   printer.println(LINE)
   printer.alignCenter()
   printer.println('¡Gracias por su visita!')
+      printer.println('Este documento no es un')
+      printer.println('comprobante fiscal')
   printer.println(LINE)
   printer.cut()
   if (isTCP) {
@@ -1574,7 +1793,7 @@ async function printFiscalReceipt(data, printerName) {
   const paperWidth = store.get('paperWidth', '80mm')
 
   if (printMode === 'system') {
-    const html = generateFiscalReceiptHTML(data, paperWidth)
+    const html = await generateFiscalReceiptHTML(data, paperWidth)
     await printHTML(html, printerName)
     return
   }
@@ -1649,6 +1868,130 @@ async function printFiscalReceipt(data, printerName) {
     }
   }
 
+  // ── CAMINO NUEVO: la representación del e-CF certificado ─────────────────
+  //
+  // Todo sale del XML firmado, incluido el envío como línea y la base/ITBIS por línea.
+  // Aquí no hay ni una cuenta: los importes se escriben tal como llegan, en texto.
+  const F = fiscalDesdeRepresentacion(data)
+  if (F) {
+    // Una rechazada NO se imprime como factura fiscal: el papel diría que existe un
+    // comprobante que la DGII no aceptó. El web ya no la manda, y esto es el cinturón.
+    if (F.rechazada) {
+      console.warn('[printer] comprobante rechazado, no se imprime como factura:', F.encf)
+      throw new Error('La DGII no aceptó este comprobante: no se puede imprimir como factura fiscal')
+    }
+
+    const Rh = respaldoFiscal(data)
+    printer.alignCenter()
+    printer.println(LINE)
+    printer.println(center(F.emisorNombre || (Rh ? Rh.negocioNombre : ''), W))
+    if (F.nombreComercial && F.nombreComercial !== F.emisorNombre) {
+      printer.println(center(F.nombreComercial, W))
+    }
+    const rncCab = F.emisorRnc || (Rh ? Rh.negocioRnc : '')
+    const dirCab = F.emisorDireccion || (Rh ? Rh.negocioDireccion : '')
+    if (rncCab) printer.println(center(`RNC: ${rncCab}`, W))
+    if (dirCab) printer.println(center(dirCab, W))
+    printer.println(LINE)
+    printer.bold(true)
+    printer.println(center(F.titulo, W))
+    printer.bold(false)
+    printer.println(center(F.encf, W))
+    printer.alignLeft()
+    const fechaCab = F.fechaEmision || (Rh ? Rh.fecha : '')
+    if (fechaCab) printer.println(`Fecha emision: ${fechaCab}`)
+    if (F.venceSecuencia) printer.println(`Vence secuencia: ${F.venceSecuencia}`)
+    if (F.compradorNombre) printer.println(`Cliente: ${F.compradorNombre}`)
+    if (F.compradorRnc) printer.println(`RNC/Cedula: ${F.compradorRnc}`)
+    printer.println(DASH)
+
+    // ── SIN XML TODAVÍA: el papel se rellena con los datos de la venta ───
+    const R = respaldoFiscal(data)
+    if (F.lineas.length === 0 && !F.total && R) {
+      R.items.forEach(i => {
+        const left = `${i.qty}x ${i.name}`
+        const right = `${cur}${formatMoney(i.subtotal)}`
+        const spaces = W - left.length - right.length
+        printer.println(left + ' '.repeat(Math.max(1, spaces)) + right)
+      })
+      if (R.descuento) printer.println(pad('Descuento:', 16) + pad(`-${cur}${formatMoney(R.descuento)}`, 16, true))
+      if (R.envio) printer.println(pad('Envio:', 16) + pad(`${cur}${formatMoney(R.envio)}`, 16, true))
+      printer.println(LINE)
+      // SIN base ni ITBIS: los calcula la DGII por línea y sólo existen en el XML.
+      printer.println(pad('TOTAL:', 16) + pad(`${cur}${formatMoney(R.total)}`, 16, true))
+      printer.println(LINE)
+      printer.alignCenter()
+      printer.bold(true)
+      printer.println('Comprobante en proceso')
+      printer.println('de validacion ante la DGII')
+      printer.bold(false)
+      printer.println('¡Gracias por su visita!')
+      printer.println(LINE)
+      printer.cut()
+      if (isTCP) { await printer.execute() }
+      else {
+        const buf = printer.getBuffer()
+        await sendRawToPrinter(buf, printerName)
+        printer.clear()
+      }
+      return
+    }
+
+    F.lineas.forEach(l => {
+      const left = l.cantidad ? `${l.cantidad}x ${l.nombre}` : l.nombre
+      const right = `${cur}${l.monto}`
+      const spaces = W - left.length - right.length
+      printer.println(left + ' '.repeat(Math.max(1, spaces)) + right)
+      // El descuento del cupón va DEBAJO de su línea, con sangría: es de esa línea y no
+      // del total. Al final haría creer que se descuenta del total.
+      if (l.descuento) {
+        printer.println(pad('   Descuento', 16) + pad(`-${cur}${l.descuento}`, 16, true))
+      }
+    })
+
+    printer.println(DASH)
+    if (F.gravado) printer.println(pad('Base imponible:', 16) + pad(`${cur}${F.gravado}`, 16, true))
+    if (F.itbis)   printer.println(pad('ITBIS (18%):', 16) + pad(`${cur}${F.itbis}`, 16, true))
+    if (F.exento)  printer.println(pad('Monto exento:', 16) + pad(`${cur}${F.exento}`, 16, true))
+    if (F.propina) printer.println(pad('Propina legal:', 16) + pad(`+${cur}${F.propina}`, 16, true))
+    printer.println(LINE)
+    printer.println(pad('TOTAL:', 16) + pad(`${cur}${F.total}`, 16, true))
+    printer.println(LINE)
+
+    printer.alignCenter()
+    if (F.conQr) {
+      printer.println(`Codigo de seguridad: ${F.rep.codigo_seguridad}`)
+      printer.println(`Fecha de firma: ${F.rep.fecha_firma}`)
+      printer.newLine()
+      // Bytes idénticos a los del módulo compartido. La URL va tal cual: es la firmada.
+      printer.raw(qrGsK(F.rep.qr_url))
+      printer.newLine()
+      printer.println('Consulte este comprobante')
+      printer.println('en la DGII escaneando el QR')
+    } else {
+      printer.bold(true)
+      printer.println('Comprobante en proceso')
+      printer.println('de validacion ante la DGII')
+      printer.bold(false)
+    }
+    printer.println('¡Gracias por su visita!')
+    printer.println(LINE)
+    printer.cut()
+
+    if (isTCP) {
+      await printer.execute()
+    } else {
+      const buf = printer.getBuffer()
+      await sendRawToPrinter(buf, printerName)
+      printer.clear()
+    }
+    return
+  }
+
+  // ── CAMINO VIEJO: payload sin `representacion` ────────────────────────────
+  // Lo usa un web anterior a octubre de 2026. Los importes ya no se calculan aquí —
+  // llegan en `subtotal`/`itbis`— así que es correcto; lo único que no puede sacar es el
+  // QR, porque la URL firmada no viaja en el contrato viejo.
   printer.alignCenter()
   printer.println(LINE)
   printer.println(center(bizName, W))
