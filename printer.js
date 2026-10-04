@@ -195,7 +195,18 @@ function fiscalDesdeRepresentacion(data) {
   if (!rep) return null
   const t = rep.totales || {}
   const conQr = !!(rep.qr_url && rep.codigo_seguridad && rep.fecha_firma)
-  const rechazada = ['rechazado', 'rechazado_esquema', 'requiere_revision'].includes(rep.estado)
+  // ⚠️ LOS CUATRO, y tienen que ser los mismos que en `EcfRepresentation.esRechazada`
+  // (Kotlin) y en `esRechazada` de `src/lib/ecfRepresentacion.ts`. Aquí faltaba `anulado`,
+  // así que una factura ANULADA —que tiene XML firmado perfectamente válido— se habría
+  // impreso por este canal como si valiera, mientras el nativo y el web la bloqueaban. Si
+  // la lista cambia en el servidor (`ecf_representacion_impresa`), cambia en los tres.
+  //
+  // Es una LISTA NEGRA a propósito, no una lista blanca de estados «buenos»: el estado que
+  // se ve al imprimir es casi siempre `certificado` —el paso a `aceptado` tarda minutos,
+  // hasta que el worker consulta a la DGII— y una lista blanca que se olvide de uno deja
+  // de imprimir facturas válidas en silencio. Eso ya pasó con E320000015506.
+  const rechazada = ['rechazado', 'rechazado_esquema', 'requiere_revision', 'anulado']
+    .includes(rep.estado)
   return {
     rep,
     conQr,
