@@ -163,6 +163,15 @@ la del local aparece solo en el membrete (línea 3), nunca como dirección de cl
    así necesita **marca explícita nueva** (`paperWidthExplicit`), con el comportamiento
    histórico como default, y el valor efectivo IMPRESO en la página de prueba para que sea
    diagnosticable. Ver `anchoTermico`.
+   **Y la marca no se regala al guardar: el campo nace VACÍO y es obligatorio**
+   (`decidirAncho` en main.js + el `<option value="">` del selector). Marcarlo explícito
+   por el simple hecho de guardar parecía suficiente y no lo era: con `80mm`
+   preseleccionado, **un negocio de 58 mm que entra a cambiar la impresora guardaría 80 mm
+   sin verlo y sus tickets saldrían CORTADOS** —48 columnas no caben en una cabeza de 384
+   puntos—, que es peor que el papel estrecho que tenía. Un default que nadie eligió no es
+   una elección: cuando la respuesta correcta depende del hardware que hay sobre la mesa,
+   se pregunta. El guardado se rechaza **entero** si falta, antes de escribir una sola
+   clave, para no dejar impresoras nuevas con el ancho sin resolver.
 3. **Un solo centrado.** El relleno manual de `center()` se SUMA a `alignCenter()` del
    hardware: el texto se va a la derecha, y más cuanto más corto. Bajo `alignCenter` se
    imprime el texto pelado; `center()` es sólo para el modo test, que no tiene impresora

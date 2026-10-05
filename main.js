@@ -922,6 +922,35 @@ async function startHttpServer() {
 
 // ─── IPC Handlers ─────────────────────────────────────────────────────────────
 
+/**
+ * Decide qué ancho de papel se guarda — y si se puede guardar.
+ *
+ * ## Por qué es estricto y no tiene default
+ * Hasta la 2.1.0 TODAS las plantillas térmicas imprimían a 32 columnas ignorando
+ * `paperWidth`, así que el `80mm` que hay guardado en la mayoría de equipos **no lo eligió
+ * nadie**: es lo que traía el desplegable, y `save-config` lo escribía siempre. Por eso
+ * `store.has('paperWidth')` no distingue nada y la intención no se puede reconstruir.
+ *
+ * Y preseleccionar `80mm` sería peor que no hacer nada: **un negocio de 58 mm que entra a
+ * cambiar la impresora guardaría 80 mm sin darse cuenta, y sus tickets saldrían cortados**
+ * —48 columnas no caben en una cabeza de 384 puntos—. Un ticket cortado es peor que un
+ * ticket estrecho.
+ *
+ * De ahí la regla: el ancho **lo elige una persona, una vez**, y hasta que lo haga el
+ * papel sigue saliendo a 32 columnas como siempre (ver `anchoTermico` en printer.js).
+ * Quien ya lo eligió no tiene que volver a elegirlo en cada guardado.
+ */
+function decidirAncho(elegido, yaExplicito, anchoGuardado) {
+  if (elegido === '58mm' || elegido === '80mm') {
+    return { ok: true, paperWidth: elegido, explicito: true }
+  }
+  if (yaExplicito) {
+    // Ya lo eligió antes: se conserva, no se vuelve a pedir.
+    return { ok: true, paperWidth: anchoGuardado, explicito: true }
+  }
+  return { ok: false, error: 'Elige el ancho del papel para guardar la configuración.' }
+}
+
 ipcMain.handle('get-config', () => {
   const legacyPrinter = store.get('printerName', '')
   return {
@@ -933,6 +962,8 @@ ipcMain.handle('get-config', () => {
     printerBar: store.has('printerBar') ? store.get('printerBar') : legacyPrinter,
     printMode: store.get('printMode', 'thermal'),
     paperWidth: store.get('paperWidth', '80mm'),
+    // El renderer sólo preselecciona el ancho si alguien lo eligió; ver `decidirAncho`.
+    paperWidthExplicit: store.get('paperWidthExplicit', false),
     httpPort: activePort || store.get('httpPort', null),
     version: app.getVersion()
   }
@@ -940,6 +971,19 @@ ipcMain.handle('get-config', () => {
 
 ipcMain.handle('save-config', async (_event, config) => {
   console.log('[printers] Guardando configuración:', JSON.stringify(config))
+
+  // El ancho se decide ANTES de escribir nada: si falta, no se guarda NI UNA clave.
+  // Un guardado a medias dejaría impresoras nuevas con el ancho sin resolver.
+  const ancho = decidirAncho(
+    config.paperWidth,
+    store.get('paperWidthExplicit', false),
+    store.get('paperWidth', '80mm'),
+  )
+  if (!ancho.ok) {
+    console.warn('[printers] guardado rechazado:', ancho.error)
+    return { success: false, error: ancho.error }
+  }
+
   store.set('businessId', config.businessId)
   store.set('businessName', config.businessName)
   store.set('printerName', config.printerName) // Keep it for legacy fallback
@@ -947,7 +991,7 @@ ipcMain.handle('save-config', async (_event, config) => {
   store.set('printerCocina', config.printerCocina || '')
   store.set('printerBar', config.printerBar || '')
   store.set('printMode', config.printMode || 'thermal')
-  store.set('paperWidth', config.paperWidth || '80mm')
+  store.set('paperWidth', ancho.paperWidth)
   // La marca de que el ancho se eligió a conciencia, no que es el que traía el formulario.
   //
   // Hace falta porque el bridge se autoactualiza solo en Windows y hasta la 2.1.0 TODOS
@@ -956,7 +1000,7 @@ ipcMain.handle('save-config', async (_event, config) => {
   // el desplegable —que arranca en `80mm`—, así que `store.has('paperWidth')` es cierto
   // para todo el que haya guardado la configuración alguna vez. Sin esta marca, el ancho
   // se queda en 32 y el papel sale como el negocio lo conoce. Ver `anchoTermico`.
-  store.set('paperWidthExplicit', true)
+  store.set('paperWidthExplicit', ancho.explicito)
 
   // Los datos del negocio ya NO se leen de `businesses`: llegan en el canje de la credencial.
   // Con credencial, esto reconecta con el JWT del equipo; sin ella, avisa qué falta.

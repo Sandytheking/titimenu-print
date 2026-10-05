@@ -235,6 +235,18 @@
       gap: 6px;
     }
 
+    .field-ayuda {
+      font-size: 11px;
+      color: var(--text-muted);
+      line-height: 1.45;
+    }
+
+    /* Sin elegir: el selector se señala como lo que es, un campo pendiente. */
+    select.sin-elegir {
+      border-color: var(--warn, #c8942b);
+      color: var(--text-muted);
+    }
+
     .row-fields, .row-fields-3 {
       display: grid;
       gap: 12px;
@@ -861,11 +873,18 @@
           <div class="field">
             <label>Ancho de Papel</label>
             <div class="select-wrapper">
+              <!-- Sin valor preseleccionado a propósito: hasta la 2.1.0 todos los tickets
+                   salían a 32 columnas ignorando este campo, así que el `80mm` que hay
+                   guardado no es una elección de nadie. Preseleccionarlo haría que un
+                   negocio de 58 mm que entra a cambiar la impresora guardara 80 mm sin
+                   darse cuenta, y sus tickets saldrían CORTADOS. Lo elige una persona. -->
               <select id="paperWidthSelect">
-                <option value="80mm">80mm (3 pulgadas)</option>
-                <option value="58mm">58mm (2 pulgadas)</option>
+                <option value="">Selecciona el ancho del papel</option>
+                <option value="58mm">58 mm (2 pulgadas)</option>
+                <option value="80mm">80 mm (3 pulgadas)</option>
               </select>
             </div>
+            <span class="field-ayuda">Mide el rollo: 58 mm es el estrecho, 80 mm el ancho.</span>
           </div>
 
         </div>
@@ -980,9 +999,19 @@
         if (config.printMode) {
           document.getElementById('printModeSelect').value = config.printMode
         }
-        if (config.paperWidth) {
-          document.getElementById('paperWidthSelect').value = config.paperWidth
+        // Sólo se preselecciona si quedó marcado como elegido; si no, el campo se
+        // queda vacío y hay que elegirlo para poder guardar.
+        const selAncho = document.getElementById('paperWidthSelect')
+        if (config.paperWidthExplicit && config.paperWidth) {
+          selAncho.value = config.paperWidth
+          selAncho.classList.remove('sin-elegir')
+        } else {
+          selAncho.value = ''
+          selAncho.classList.add('sin-elegir')
         }
+        selAncho.addEventListener('change', () => {
+          selAncho.classList.toggle('sin-elegir', !selAncho.value)
+        })
         if (config.version) {
           document.getElementById('appVersion').textContent = `v${config.version}`
         }
@@ -1070,6 +1099,12 @@
         showMessage('Selecciona al menos una impresora activa', 'error')
         return
       }
+      if (!paperWidth) {
+        // Obligatorio y sin default: ver el comentario del selector.
+        showMessage('Elige el ancho del papel — mide el rollo si no estás seguro', 'error')
+        document.getElementById('paperWidthSelect').focus()
+        return
+      }
 
       const btn = document.getElementById('saveBtn')
       const dot = document.getElementById('statusDot')
@@ -1082,7 +1117,7 @@
       text.textContent = 'Conectando a Supabase...'
 
       try {
-        await window.electronAPI.saveConfig({
+        const res = await window.electronAPI.saveConfig({
           businessId,
           businessName,
           printerName: printerCaja || printerCocina || printerBar, // backward compatibility
@@ -1092,6 +1127,19 @@
           printMode,
           paperWidth
         })
+        // El proceso principal es la autoridad y puede rechazar el guardado (p.ej. sin
+        // ancho elegido). Si se ignorara la respuesta, el mensaje diría "guardada" y no
+        // se habría escrito nada: el peor de los dos mundos.
+        if (res && res.success === false) {
+          isSaving = false
+          btn.disabled = false
+          btn.textContent = 'Guardar y conectar'
+          dot.className = 'status-dot'
+          text.textContent = 'Desconectado'
+          showMessage(res.error || 'No se pudo guardar la configuración', 'error')
+          addLog(res.error || 'No se pudo guardar la configuración', 'err')
+          return
+        }
         addLog('Configuración guardada — iniciando conexión...', 'warn')
       } catch (e) {
         isSaving = false
@@ -1136,7 +1184,7 @@
         document.getElementById('printerCocinaSelect').selectedIndex = 0
         document.getElementById('printerBarSelect').selectedIndex = 0
         document.getElementById('printModeSelect').value = 'thermal'
-        document.getElementById('paperWidthSelect').value = '80mm'
+        document.getElementById('paperWidthSelect').value = ''
         document.getElementById('statusDot').className = 'status-dot'
         document.getElementById('statusText').textContent = 'Desconectado'
         isSaving = false

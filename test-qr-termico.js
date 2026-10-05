@@ -24,9 +24,11 @@ const assert = require('assert')
 const { printer: ThermalPrinter, types: PrinterTypes, BreakLine } = require('node-thermal-printer')
 
 const src = fs.readFileSync(path.join(__dirname, 'printer.js'), 'utf8')
-function extraer(nombre) {
+const srcMain = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8')
+function extraer(nombre, de = src) {
+  const src = de
   const i = src.search(new RegExp(`(async )?function ${nombre}\\(`))
-  assert.ok(i >= 0, `no encontré ${nombre} en printer.js`)
+  assert.ok(i >= 0, `no encontré ${nombre}`)
   let k = src.indexOf('{', i), prof = 0
   for (; k < src.length; k++) {
     if (src[k] === '{') prof++
@@ -46,6 +48,7 @@ eval(extraer('pad'))
 eval(extraer('renglonImporte'))
 eval(extraer('center'))
 eval(extraer('imprimirQrTermico'))
+eval(extraer('decidirAncho', srcMain))
 
 const URL_QR = 'https://fc.dgii.gov.do/TesteCF/ConsultaTimbreFC?RncEmisor=132752155&ENCF=E320000015515&MontoTotal=810.00&CodigoSeguridad=aZECOS'
 
@@ -244,6 +247,59 @@ async function prueba(nombre, fn) {
     assert.equal(anchoTermicoDeLaConfig().W, 32)
     config = {}                                                // equipo recién instalado
     assert.equal(anchoTermicoDeLaConfig().W, 32)
+  })
+
+  console.log('\nEL ANCHO LO ELIGE UNA PERSONA (main.js)')
+
+  await prueba('sin elegir el ancho, el guardado se RECHAZA entero', () => {
+    // Y se rechaza antes de escribir una sola clave: un guardado a medias dejaría
+    // impresoras nuevas con el ancho sin resolver.
+    for (const sinElegir of ['', null, undefined, '72mm', 'ancho']) {
+      const r = decidirAncho(sinElegir, false, '80mm')
+      assert.equal(r.ok, false, `«${sinElegir}» debería rechazarse`)
+      assert.ok(r.error && /ancho del papel/i.test(r.error), 'el error debe decir qué falta')
+      assert.equal(r.explicito, undefined, 'un rechazo no puede marcar nada como explícito')
+    }
+  })
+
+  await prueba('elegirlo es lo ÚNICO que escribe la marca', () => {
+    for (const w of ['58mm', '80mm']) {
+      const r = decidirAncho(w, false, '80mm')
+      assert.deepEqual(r, { ok: true, paperWidth: w, explicito: true })
+    }
+  })
+
+  await prueba('un 58 mm no se convierte en 80 mm por guardar la impresora', () => {
+    // El riesgo que hizo estricta esta regla: con el desplegable preseleccionado en
+    // 80 mm, un negocio de 58 mm que entra a cambiar de impresora guardaría 80 mm sin
+    // verlo y sus tickets saldrían CORTADOS (48 columnas no caben en 384 puntos).
+    // Ahora, si no eligió, no se guarda; y si ya había elegido 58, se conserva.
+    assert.equal(decidirAncho('', false, '80mm').ok, false)
+    const r = decidirAncho(undefined, true, '58mm')
+    assert.deepEqual(r, { ok: true, paperWidth: '58mm', explicito: true })
+    assert.equal(anchoTermico(r.paperWidth, r.explicito).W, 32, 'un 58 mm debe seguir en 32')
+  })
+
+  await prueba('quien ya eligió no vuelve a elegir en cada guardado', () => {
+    const r = decidirAncho(undefined, true, '80mm')
+    assert.deepEqual(r, { ok: true, paperWidth: '80mm', explicito: true })
+    // Y si cambia de opinión, el valor nuevo manda.
+    assert.equal(decidirAncho('58mm', true, '80mm').paperWidth, '58mm')
+  })
+
+  await prueba('la UI no preselecciona el ancho ni lo deja guardar vacío', () => {
+    // El default del formulario era el agujero: `80mm` preseleccionado se guardaba como
+    // si alguien lo hubiera elegido. El selector tiene que nacer vacío y ser obligatorio.
+    const ui = fs.readFileSync(path.join(__dirname, 'renderer', 'config.html'), 'utf8')
+    const sel = ui.slice(ui.indexOf('<select id="paperWidthSelect">'))
+    const opciones = sel.slice(0, sel.indexOf('</select>'))
+    assert.ok(/<option value="">/.test(opciones), 'falta la opción vacía de "Selecciona…"')
+    assert.ok(!/selected/.test(opciones), 'ninguna opción de ancho puede venir preseleccionada')
+    assert.ok(/value="58mm"/.test(opciones) && /value="80mm"/.test(opciones), 'faltan los dos anchos')
+    assert.ok(ui.includes("if (!paperWidth) {"), 'el ancho no es obligatorio para guardar')
+    assert.ok(/config\.paperWidthExplicit && config\.paperWidth/.test(ui),
+      'la UI preselecciona el ancho sin comprobar la marca explícita')
+    assert.ok(/Mide el rollo/.test(ui), 'falta la ayuda para medir el rollo')
   })
 
   await prueba('un renglón de importe ocupa el ancho entero', () => {
