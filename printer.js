@@ -110,6 +110,25 @@ function pad(str, len, right = false) {
   return right ? padding + str : str + padding
 }
 
+/**
+ * El ancho del papel térmico, en COLUMNAS, y las dos reglas que se dibujan con él.
+ *
+ * ## Por qué existe
+ * Las cuatro plantillas térmicas —recibo de POS, delivery, factura fiscal y arqueo—
+ * tenían `const W = 32` a mano, y 32 columnas es papel de **58 mm**. En un rollo de
+ * 80 mm, que es el que usan todos los negocios, el texto ocupaba dos tercios del papel
+ * y los importes alineados a la derecha caían en el medio: el `paperWidth` de la
+ * configuración no lo leía nadie en esta rama (la de HTML sí, en `getReceiptStyles`).
+ *
+ * 48 columnas es fuente A en 80 mm (576 puntos de cabeza / 12 por carácter); 32 lo es en
+ * 58 mm (384 / 12). `HALF` es el ancho de cada mitad para los renglones de
+ * `pad(etiqueta, HALF) + pad(importe, HALF, true)`, que es como se alinea a la derecha.
+ */
+function anchoTermico(paperWidth) {
+  const W = paperWidth === '58mm' ? 32 : 48
+  return { W, HALF: W / 2, LINE: '='.repeat(W), DASH: '-'.repeat(W) }
+}
+
 function center(str, width = 32) {
   str = String(str || '')
   if (str.length >= width) return str
@@ -171,6 +190,69 @@ function qrGsK(data, size = 5, ecc = 50) {
     bytes,
     Buffer.from([0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x51, 0x30]),                  // imprimir
   ])
+}
+
+/**
+ * Pone el QR en el papel TÉRMICO. Raster por defecto, nativo como opción.
+ *
+ * ## Por qué NO se usa `printer.raw()` — el bug que costó la 2.1.0
+ * `raw()` de node-thermal-printer **no escribe en el buffer**: hace
+ * `Interface.execute(bytes)` y los manda por su cuenta (`core.js:470`). Pero la ruta
+ * USB/local de este bridge imprime con `getBuffer()` + `sendRawToPrinter()`, así que el
+ * QR salía por una interfaz que en esa ruta es **un fichero temporal dummy** —el que
+ * existe para que node-thermal-printer no deje ficheros en el directorio de trabajo— y
+ * **nunca llegaba al papel**. Todo lo demás salía perfecto porque va al buffer.
+ *
+ * El modo de fallo es el peor: no hay error, no hay log, el papel sale completo y sólo
+ * falta el QR. Se diagnosticó en un papel real de la 2.1.0 (E320000015515, 2Connect
+ * POS80 por USB) y la pista falsa que lo retrasó fue la apariencia del papel: parecía
+ * HTML del driver de Windows, pero las líneas `===` y el ancho corto son la huella de
+ * ESTA rama. La leyenda lo confirmó: aquí dice «escaneando el QR» y el HTML dice
+ * «escaneando el código QR».
+ *
+ * Por eso, para bytes crudos, **se usa `append()`, que sí bufferiza** (y acepta Buffer
+ * sin pasarlo por el saneo de texto). `raw()` no se usa en ninguna parte.
+ *
+ * ## Por qué el raster es el default
+ * `GS ( k` depende de que el firmware lo implemente, y una térmica que no lo soporta se
+ * come la instrucción en silencio. El raster (`GS v 0`, vía `printImageBuffer`) lo dibuja
+ * la impresora como cualquier imagen y funciona en cualquier modelo. El QR es el único
+ * dato del papel que el cliente no puede teclear a mano, así que aquí pesa más
+ * funcionar en todas que ser idéntico al byte con TitiStaff.
+ *
+ * Quien quiera el nativo —más nítido y más rápido— lo enciende con `qrNativo`. Ojo: la
+ * app de Android sigue mandando `GS ( k` por Bluetooth, así que si una térmica no lo
+ * soporta, allá el QR también falta; eso se arregla en el módulo compartido, no aquí.
+ */
+async function imprimirQrTermico(printer, url, paperWidth) {
+  if (store.get('qrNativo', false)) {
+    // `append`, NO `raw`: ver arriba.
+    printer.append(qrGsK(url))
+    return 'nativo'
+  }
+  try {
+    const QRCode = require('qrcode')
+    // La URL TAL CUAL: es la que la DGII firmó. 180 px en 58 mm (384 puntos de cabeza)
+    // y 220 en 80 mm (576): legible por cualquier móvil sin comerse el rollo.
+    const png = await QRCode.toBuffer(url, {
+      margin: 1, errorCorrectionLevel: 'M', type: 'png',
+      width: paperWidth === '58mm' ? 180 : 220,
+    })
+    await printer.printImageBuffer(png)   // appendea al buffer
+    return 'raster'
+  } catch (e) {
+    // Degradar a nativo antes que rendirse: puede que esta impresora sí lo soporte.
+    console.warn('[printer] QR raster falló, probando el nativo:', e.message)
+    try {
+      printer.append(qrGsK(url))
+      return 'nativo-fallback'
+    } catch (e2) {
+      // Sin QR se imprime igual: el código de seguridad en texto permite la consulta
+      // manual en el portal. Quedarse sin papel sería peor.
+      console.warn('[printer] tampoco se pudo poner el QR nativo:', e2.message)
+      return 'ninguno'
+    }
+  }
 }
 
 /**
@@ -275,7 +357,7 @@ function respaldoFiscal(data) {
   }
 }
 
-function taxBreakdownLines(order, businessInfo, currency, total) {
+function taxBreakdownLines(order, businessInfo, currency, total, HALF = 16) {
   let base = order.tax_base != null ? parseFloat(order.tax_base) : null
   let itbis = order.itbis != null ? parseFloat(order.itbis) : null
 
@@ -290,8 +372,8 @@ function taxBreakdownLines(order, businessInfo, currency, total) {
   return [
     '-'.repeat(32),
     'Incluye ITBIS 18%',
-    pad('Base imponible:', 16) + pad(`${currency}${formatMoney(base)}`, 16, true),
-    pad('ITBIS (18%):', 16) + pad(`${currency}${formatMoney(itbis)}`, 16, true),
+    pad('Base imponible:', HALF) + pad(`${currency}${formatMoney(base)}`, HALF, true),
+    pad('ITBIS (18%):', HALF) + pad(`${currency}${formatMoney(itbis)}`, HALF, true),
   ]
 }
 
@@ -356,7 +438,9 @@ async function createPrinter(printerName) {
     })
     if (printSpeed > 1) {
       console.log('[printer] Setting print speed:', printSpeed)
-      p.raw(Buffer.from([0x1D, 0x73, printSpeed]))
+      // `append`, no `raw`: en la ruta USB `raw` escribe en la interfaz dummy y el
+      // comando no llegaba nunca a la impresora — misma causa que el QR perdido.
+      p.append(Buffer.from([0x1D, 0x73, printSpeed]))
     }
     // Saneo en la FRONTERA: se envuelven los dos métodos que reciben texto, en la única
     // fábrica de impresoras. Así ninguna de las 7 plantillas tiene que acordarse de sanear
@@ -1214,9 +1298,7 @@ async function printPOSReceipt(order, printerName, businessInfo) {
   const address = info.address || ''
   const currency = cur
 
-  const LINE = '================================'
-  const DASH = '--------------------------------'
-  const W = 32
+  const { W, HALF, LINE, DASH } = anchoTermico(paperWidth)
   const now = new Date()
   const dateStr = now.toLocaleDateString('es-DO', { day: '2-digit', month: '2-digit', year: 'numeric' }) + '  ' + now.toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' })
   const items = order.items || order.order_items || []
@@ -1319,16 +1401,16 @@ async function printPOSReceipt(order, printerName, businessInfo) {
     }),
     DASH,
     ...(showBreakdown ? [
-      pad('SUBTOTAL:', 16) + pad(`${currency}${formatMoney(subtotal)}`, 16, true),
-      ...(hasDiscount ? [pad(discountLabel, 16) + pad(`-${currency}${formatMoney(discount)}`, 16, true)] : []),
-      ...(hasDeliveryFee ? [pad('Envio:', 16) + pad(`${currency}${formatMoney(deliveryFee)}`, 16, true)] : []),
-      ...(hasTip ? [pad(tipLabel, 16) + pad(`+${currency}${formatMoney(tip)}`, 16, true)] : []),
+      pad('SUBTOTAL:', HALF) + pad(`${currency}${formatMoney(subtotal)}`, HALF, true),
+      ...(hasDiscount ? [pad(discountLabel, HALF) + pad(`-${currency}${formatMoney(discount)}`, HALF, true)] : []),
+      ...(hasDeliveryFee ? [pad('Envio:', HALF) + pad(`${currency}${formatMoney(deliveryFee)}`, HALF, true)] : []),
+      ...(hasTip ? [pad(tipLabel, HALF) + pad(`+${currency}${formatMoney(tip)}`, HALF, true)] : []),
     ] : []),
-    pad('TOTAL:', 16) + pad(`${currency}${formatMoney(total)}`, 16, true),
-    ...taxBreakdownLines(order, businessInfo, currency, total),
+    pad('TOTAL:', HALF) + pad(`${currency}${formatMoney(total)}`, HALF, true),
+    ...taxBreakdownLines(order, businessInfo, currency, total, HALF),
     `Pago: ${payMethod}`,
-    ...(showCashLines ? [pad('Recibido:', 16) + pad(`${currency}${formatMoney(cashGiven)}`, 16, true)] : []),
-    ...(showCashLines && changeGiven > 0 ? [pad('Cambio:', 16) + pad(`${currency}${formatMoney(changeGiven)}`, 16, true)] : []),
+    ...(showCashLines ? [pad('Recibido:', HALF) + pad(`${currency}${formatMoney(cashGiven)}`, HALF, true)] : []),
+    ...(showCashLines && changeGiven > 0 ? [pad('Cambio:', HALF) + pad(`${currency}${formatMoney(changeGiven)}`, HALF, true)] : []),
     ...(orderNotes ? [`Nota: ${orderNotes}`] : []),
     LINE,
     center('¡Gracias por su visita!', W),
@@ -1381,19 +1463,19 @@ async function printPOSReceipt(order, printerName, businessInfo) {
   })
   printer.println(DASH)
   if (showBreakdown) {
-    printer.println(pad('SUBTOTAL:', 16) + pad(`${currency}${formatMoney(subtotal)}`, 16, true))
-    if (hasDiscount) printer.println(pad(discountLabel, 16) + pad(`-${currency}${formatMoney(discount)}`, 16, true))
-    if (hasDeliveryFee) printer.println(pad('Envio:', 16) + pad(`${currency}${formatMoney(deliveryFee)}`, 16, true))
-    if (hasTip) printer.println(pad(tipLabel, 16) + pad(`+${currency}${formatMoney(tip)}`, 16, true))
+    printer.println(pad('SUBTOTAL:', HALF) + pad(`${currency}${formatMoney(subtotal)}`, HALF, true))
+    if (hasDiscount) printer.println(pad(discountLabel, HALF) + pad(`-${currency}${formatMoney(discount)}`, HALF, true))
+    if (hasDeliveryFee) printer.println(pad('Envio:', HALF) + pad(`${currency}${formatMoney(deliveryFee)}`, HALF, true))
+    if (hasTip) printer.println(pad(tipLabel, HALF) + pad(`+${currency}${formatMoney(tip)}`, HALF, true))
   }
-  printer.println(pad('TOTAL:', 16) + pad(`${currency}${formatMoney(total)}`, 16, true))
-  taxBreakdownLines(order, businessInfo, currency, total).forEach(l => printer.println(l))
+  printer.println(pad('TOTAL:', HALF) + pad(`${currency}${formatMoney(total)}`, HALF, true))
+  taxBreakdownLines(order, businessInfo, currency, total, HALF).forEach(l => printer.println(l))
   printer.println(`Pago: ${payMethod}`)
   if (showCashLines) {
-    printer.println(pad('Recibido:', 16) + pad(`${currency}${formatMoney(cashGiven)}`, 16, true))
+    printer.println(pad('Recibido:', HALF) + pad(`${currency}${formatMoney(cashGiven)}`, HALF, true))
     if (changeGiven > 0) {
       printer.bold(true)
-      printer.println(pad('Cambio:', 16) + pad(`${currency}${formatMoney(changeGiven)}`, 16, true))
+      printer.println(pad('Cambio:', HALF) + pad(`${currency}${formatMoney(changeGiven)}`, HALF, true))
       printer.bold(false)
     }
   }
@@ -1519,7 +1601,7 @@ async function printTableComanda(order, printerName, businessInfo, tableInfo = {
     return
   }
 
-  const LINE = '================================'
+  const { W, LINE } = anchoTermico(paperWidth)
   const now = new Date()
   const dateStr = now.toLocaleDateString('es-DO', { day: '2-digit', month: '2-digit', year: 'numeric' }) + '  ' + now.toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' })
   const tableLabel = tableInfo?.table_label || order.table_label || tableInfo?.table_number || order.table_number || order.table_id || '?'
@@ -1625,9 +1707,7 @@ async function printDeliveryTicket(order, printerName, businessInfo) {
   const rnc = info.rnc || ''
   const address = info.address || ''
 
-  const LINE = '================================'
-  const DASH = '--------------------------------'
-  const W = 32
+  const { W, HALF, LINE, DASH } = anchoTermico(paperWidth)
   const now = new Date()
   const dateStr = now.toLocaleDateString('es-DO', { day: '2-digit', month: '2-digit', year: 'numeric' }) + '  ' + now.toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' })
   const typeLabel = (order.order_type || 'delivery').toUpperCase()
@@ -1675,12 +1755,12 @@ async function printDeliveryTicket(order, printerName, businessInfo) {
       }),
       DASH,
       ...((deliveryFee > 0 || hasDiscount) ? [
-        pad('Subtotal:', 16) + pad(`${currency}${formatMoney(subtotal)}`, 16, true),
-        ...(hasDiscount ? [pad(discountLabel, 16) + pad(`-${currency}${formatMoney(discount)}`, 16, true)] : []),
-        ...(deliveryFee > 0 ? [pad('Envio:', 16) + pad(`${currency}${formatMoney(deliveryFee)}`, 16, true)] : []),
+        pad('Subtotal:', HALF) + pad(`${currency}${formatMoney(subtotal)}`, HALF, true),
+        ...(hasDiscount ? [pad(discountLabel, HALF) + pad(`-${currency}${formatMoney(discount)}`, HALF, true)] : []),
+        ...(deliveryFee > 0 ? [pad('Envio:', HALF) + pad(`${currency}${formatMoney(deliveryFee)}`, HALF, true)] : []),
       ] : []),
-      pad('TOTAL:', 16) + pad(`${currency}${formatMoney(total)}`, 16, true),
-      ...taxBreakdownLines(order, businessInfo, currency, total),
+      pad('TOTAL:', HALF) + pad(`${currency}${formatMoney(total)}`, HALF, true),
+      ...taxBreakdownLines(order, businessInfo, currency, total, HALF),
       ...(deliveryAddr ? [DASH, `Dir: ${deliveryAddr}`] : []),
       ...(orderNotes ? [`Nota: ${orderNotes}`] : []),
       LINE,
@@ -1723,12 +1803,12 @@ async function printDeliveryTicket(order, printerName, businessInfo) {
   })
   printer.println(DASH)
   if (deliveryFee > 0 || hasDiscount) {
-    printer.println(pad('Subtotal:', 16) + pad(`${currency}${formatMoney(subtotal)}`, 16, true))
-    if (hasDiscount) printer.println(pad(discountLabel, 16) + pad(`-${currency}${formatMoney(discount)}`, 16, true))
-    if (deliveryFee > 0) printer.println(pad('Envio:', 16) + pad(`${currency}${formatMoney(deliveryFee)}`, 16, true))
+    printer.println(pad('Subtotal:', HALF) + pad(`${currency}${formatMoney(subtotal)}`, HALF, true))
+    if (hasDiscount) printer.println(pad(discountLabel, HALF) + pad(`-${currency}${formatMoney(discount)}`, HALF, true))
+    if (deliveryFee > 0) printer.println(pad('Envio:', HALF) + pad(`${currency}${formatMoney(deliveryFee)}`, HALF, true))
   }
-  printer.println(pad('TOTAL:', 16) + pad(`${currency}${formatMoney(total)}`, 16, true))
-  taxBreakdownLines(order, businessInfo, currency, total).forEach(l => printer.println(l))
+  printer.println(pad('TOTAL:', HALF) + pad(`${currency}${formatMoney(total)}`, HALF, true))
+  taxBreakdownLines(order, businessInfo, currency, total, HALF).forEach(l => printer.println(l))
   if (deliveryAddr) {
     printer.println(DASH)
     printer.println(`Dir: ${deliveryAddr}`)
@@ -1759,14 +1839,16 @@ async function printTestPage(printerName, businessName) {
     return
   }
 
+  const { W, LINE } = anchoTermico(paperWidth)
   const lines = [
-    '================================',
-    '  TitiMenu',
-    businessName || 'Mi Negocio',
-    '================================',
-    'Impresora configurada OK!',
-    new Date().toLocaleString('es-DO'),
-    '================================',
+    LINE,
+    center('TitiMenu', W),
+    center(businessName || 'Mi Negocio', W),
+    LINE,
+    center('Impresora configurada OK!', W),
+    center(`Papel: ${paperWidth} (${W} columnas)`, W),
+    center(new Date().toLocaleString('es-DO'), W),
+    LINE,
     '[CORTE]'
   ]
 
@@ -1785,15 +1867,17 @@ async function printTestPage(printerName, businessName) {
     }
   }
   printer.alignCenter()
-  printer.println('================================')
+  printer.println(LINE)
   printer.bold(true)
-  printer.println('  TitiMenu')
+  printer.println('TitiMenu')
   printer.bold(false)
   printer.println(businessName || 'Mi Negocio')
-  printer.println('================================')
+  printer.println(LINE)
   printer.println('Impresora configurada OK!')
+  // El ancho configurado, IMPRESO: así la página de prueba sirve para comprobarlo.
+  printer.println(`Papel: ${paperWidth} (${W} columnas)`)
   printer.println(new Date().toLocaleString('es-DO'))
-  printer.println('================================')
+  printer.println(LINE)
   printer.cut()
   if (isTCP) {
     await printer.execute()
@@ -1819,9 +1903,7 @@ async function printFiscalReceipt(data, printerName) {
     return
   }
 
-  const LINE = '================================'
-  const DASH = '--------------------------------'
-  const W = 32
+  const { W, HALF, LINE, DASH } = anchoTermico(paperWidth)
 
   const bizName = data.business_name || 'MI NEGOCIO'
   const legalName = data.legal_name || ''
@@ -1858,11 +1940,11 @@ async function printFiscalReceipt(data, printerName) {
       return left + ' '.repeat(Math.max(1, spaces)) + right
     }),
     DASH,
-    pad('Base imponible:', 16) + pad(`${currency}${formatMoney(subtotal)}`, 16, true),
-    pad('ITBIS (18%):', 16) + pad(`+${currency}${formatMoney(itbis)}`, 16, true),
-    ...(hasTip ? [pad('Propina:', 16) + pad(`+${currency}${formatMoney(tip)}`, 16, true)] : []),
+    pad('Base imponible:', HALF) + pad(`${currency}${formatMoney(subtotal)}`, HALF, true),
+    pad('ITBIS (18%):', HALF) + pad(`+${currency}${formatMoney(itbis)}`, HALF, true),
+    ...(hasTip ? [pad('Propina:', HALF) + pad(`+${currency}${formatMoney(tip)}`, HALF, true)] : []),
     LINE,
-    pad('TOTAL:', 16) + pad(`${currency}${formatMoney(total)}`, 16, true),
+    pad('TOTAL:', HALF) + pad(`${currency}${formatMoney(total)}`, HALF, true),
     LINE,
     ...(data.client_name ? [
       `Cliente: ${data.client_name}`,
@@ -1937,11 +2019,11 @@ async function printFiscalReceipt(data, printerName) {
         const spaces = W - left.length - right.length
         printer.println(left + ' '.repeat(Math.max(1, spaces)) + right)
       })
-      if (R.descuento) printer.println(pad('Descuento:', 16) + pad(`-${cur}${formatMoney(R.descuento)}`, 16, true))
-      if (R.envio) printer.println(pad('Envio:', 16) + pad(`${cur}${formatMoney(R.envio)}`, 16, true))
+      if (R.descuento) printer.println(pad('Descuento:', HALF) + pad(`-${cur}${formatMoney(R.descuento)}`, HALF, true))
+      if (R.envio) printer.println(pad('Envio:', HALF) + pad(`${cur}${formatMoney(R.envio)}`, HALF, true))
       printer.println(LINE)
       // SIN base ni ITBIS: los calcula la DGII por línea y sólo existen en el XML.
-      printer.println(pad('TOTAL:', 16) + pad(`${cur}${formatMoney(R.total)}`, 16, true))
+      printer.println(pad('TOTAL:', HALF) + pad(`${cur}${formatMoney(R.total)}`, HALF, true))
       printer.println(LINE)
       printer.alignCenter()
       printer.bold(true)
@@ -1968,17 +2050,17 @@ async function printFiscalReceipt(data, printerName) {
       // El descuento del cupón va DEBAJO de su línea, con sangría: es de esa línea y no
       // del total. Al final haría creer que se descuenta del total.
       if (l.descuento) {
-        printer.println(pad('   Descuento', 16) + pad(`-${cur}${l.descuento}`, 16, true))
+        printer.println(pad('   Descuento', HALF) + pad(`-${cur}${l.descuento}`, HALF, true))
       }
     })
 
     printer.println(DASH)
-    if (F.gravado) printer.println(pad('Base imponible:', 16) + pad(`${cur}${F.gravado}`, 16, true))
-    if (F.itbis)   printer.println(pad('ITBIS (18%):', 16) + pad(`${cur}${F.itbis}`, 16, true))
-    if (F.exento)  printer.println(pad('Monto exento:', 16) + pad(`${cur}${F.exento}`, 16, true))
-    if (F.propina) printer.println(pad('Propina legal:', 16) + pad(`+${cur}${F.propina}`, 16, true))
+    if (F.gravado) printer.println(pad('Base imponible:', HALF) + pad(`${cur}${F.gravado}`, HALF, true))
+    if (F.itbis)   printer.println(pad('ITBIS (18%):', HALF) + pad(`${cur}${F.itbis}`, HALF, true))
+    if (F.exento)  printer.println(pad('Monto exento:', HALF) + pad(`${cur}${F.exento}`, HALF, true))
+    if (F.propina) printer.println(pad('Propina legal:', HALF) + pad(`+${cur}${F.propina}`, HALF, true))
     printer.println(LINE)
-    printer.println(pad('TOTAL:', 16) + pad(`${cur}${F.total}`, 16, true))
+    printer.println(pad('TOTAL:', HALF) + pad(`${cur}${F.total}`, HALF, true))
     printer.println(LINE)
 
     printer.alignCenter()
@@ -1986,8 +2068,10 @@ async function printFiscalReceipt(data, printerName) {
       printer.println(`Codigo de seguridad: ${F.rep.codigo_seguridad}`)
       printer.println(`Fecha de firma: ${F.rep.fecha_firma}`)
       printer.newLine()
-      // Bytes idénticos a los del módulo compartido. La URL va tal cual: es la firmada.
-      printer.raw(qrGsK(F.rep.qr_url))
+      // La URL va tal cual: es la firmada. Raster por defecto; ver `imprimirQrTermico`
+      // para por qué esto NO puede volver a ser `printer.raw()`.
+      const comoSalio = await imprimirQrTermico(printer, F.rep.qr_url, paperWidth)
+      console.log(`[printer] QR de ${F.encf} impreso por: ${comoSalio}`)
       printer.newLine()
       printer.println('Consulte este comprobante')
       printer.println('en la DGII escaneando el QR')
@@ -2037,11 +2121,11 @@ async function printFiscalReceipt(data, printerName) {
     printer.println(left + ' '.repeat(Math.max(1, spaces)) + right)
   })
   printer.println(DASH)
-  printer.println(pad('Base imponible:', 16) + pad(`${currency}${formatMoney(subtotal)}`, 16, true))
-  printer.println(pad('ITBIS (18%):', 16) + pad(`+${currency}${formatMoney(itbis)}`, 16, true))
-  if (hasTip) printer.println(pad('Propina:', 16) + pad(`+${currency}${formatMoney(tip)}`, 16, true))
+  printer.println(pad('Base imponible:', HALF) + pad(`${currency}${formatMoney(subtotal)}`, HALF, true))
+  printer.println(pad('ITBIS (18%):', HALF) + pad(`+${currency}${formatMoney(itbis)}`, HALF, true))
+  if (hasTip) printer.println(pad('Propina:', HALF) + pad(`+${currency}${formatMoney(tip)}`, HALF, true))
   printer.println(LINE)
-  printer.println(pad('TOTAL:', 16) + pad(`${currency}${formatMoney(total)}`, 16, true))
+  printer.println(pad('TOTAL:', HALF) + pad(`${currency}${formatMoney(total)}`, HALF, true))
   printer.println(LINE)
   if (data.client_name) {
     printer.println(`Cliente: ${data.client_name}`)
@@ -2079,7 +2163,7 @@ async function printStationComanda(stationTitle, items, printerName, orderInfo, 
     return
   }
 
-  const LINE = '================================'
+  const { W, LINE } = anchoTermico(paperWidth)
   const now = new Date()
   const dateStr = now.toLocaleDateString('es-DO', { day: '2-digit', month: '2-digit', year: 'numeric' }) + '  ' + now.toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' })
 
@@ -2190,10 +2274,9 @@ async function printBarComanda(items, printerName, orderInfo, businessInfo) {
 async function printClosingReport(data, printerName) {
   const currency = data.currency || store.get('businessCurrency', 'RD$')
   const printMode = store.get('printMode', 'thermal')
+  const paperWidth = store.get('paperWidth', '80mm')
 
-  const LINE = '================================'
-  const DASH = '--------------------------------'
-  const W = 32
+  const { W, HALF, LINE, DASH } = anchoTermico(paperWidth)
 
   const bizName = data.business_name || store.get('businessName', 'MI NEGOCIO')
   const openedAt = data.opened_at || ''
@@ -2226,24 +2309,24 @@ async function printClosingReport(data, printerName) {
       center(closedAt, W),
       ...(cashierName ? [center(`Cajero/a: ${cashierName}`, W)] : []),
       DASH,
-      pad('Apertura:', 16) + pad(openedAt, 16, true),
-      pad('Efectivo apertura:', 16) + pad(`${currency}${formatMoney(openingCash)}`, 16, true),
+      pad('Apertura:', HALF) + pad(openedAt, HALF, true),
+      pad('Efectivo apertura:', HALF) + pad(`${currency}${formatMoney(openingCash)}`, HALF, true),
       DASH,
       // Todo el dinero del turno bajo UNA sola puerta: en un cierre ciego basta con que
       // una línea de importe se escape para que el control no sirva.
       ...(blind ? [] : [
-        pad('Total ventas:', 16) + pad(`${currency}${formatMoney(totalSales)}`, 16, true),
-        pad('  Efectivo:', 16) + pad(`${currency}${formatMoney(totalCash)}`, 16, true),
-        pad('  Tarjeta:', 16) + pad(`${currency}${formatMoney(totalCard)}`, 16, true),
-        ...(totalTransfer > 0 ? [pad('  Transferencia:', 16) + pad(`${currency}${formatMoney(totalTransfer)}`, 16, true)] : []),
+        pad('Total ventas:', HALF) + pad(`${currency}${formatMoney(totalSales)}`, HALF, true),
+        pad('  Efectivo:', HALF) + pad(`${currency}${formatMoney(totalCash)}`, HALF, true),
+        pad('  Tarjeta:', HALF) + pad(`${currency}${formatMoney(totalCard)}`, HALF, true),
+        ...(totalTransfer > 0 ? [pad('  Transferencia:', HALF) + pad(`${currency}${formatMoney(totalTransfer)}`, HALF, true)] : []),
       ]),
-      pad('  Ordenes:', 16) + pad(String(totalOrders), 16, true),
+      pad('  Ordenes:', HALF) + pad(String(totalOrders), HALF, true),
       DASH,
-      ...(blind ? [] : [pad('Efectivo esperado:', 16) + pad(`${currency}${formatMoney(expectedCash)}`, 16, true)]),
+      ...(blind ? [] : [pad('Efectivo esperado:', HALF) + pad(`${currency}${formatMoney(expectedCash)}`, HALF, true)]),
       // El contado SÍ sale en el ciego: es lo que el propio empleado acaba de declarar.
-      pad('Efectivo contado:', 16) + pad(`${currency}${formatMoney(closingCash)}`, 16, true),
+      pad('Efectivo contado:', HALF) + pad(`${currency}${formatMoney(closingCash)}`, HALF, true),
       LINE,
-      ...(blind ? [] : [pad('Diferencia:', 16) + pad(`${diffSign}${currency}${formatMoney(diff)}`, 16, true)]),
+      ...(blind ? [] : [pad('Diferencia:', HALF) + pad(`${diffSign}${currency}${formatMoney(diff)}`, HALF, true)]),
       ...(notes ? [DASH, `Nota: ${notes}`] : []),
       DASH,
       center('Powered by TitiMenu', W),
@@ -2279,31 +2362,31 @@ async function printClosingReport(data, printerName) {
   if (cashierName) printer.println(`Cajero/a: ${cashierName}`)
   printer.println(DASH)
   printer.alignLeft()
-  printer.println(pad('Apertura:', 16) + pad(openedAt, 16, true))
-  printer.println(pad('Efectivo apertura:', 16) + pad(`${currency}${formatMoney(openingCash)}`, 16, true))
+  printer.println(pad('Apertura:', HALF) + pad(openedAt, HALF, true))
+  printer.println(pad('Efectivo apertura:', HALF) + pad(`${currency}${formatMoney(openingCash)}`, HALF, true))
   printer.println(DASH)
   if (!blind) {
     printer.bold(true)
-    printer.println(pad('Total ventas:', 16) + pad(`${currency}${formatMoney(totalSales)}`, 16, true))
+    printer.println(pad('Total ventas:', HALF) + pad(`${currency}${formatMoney(totalSales)}`, HALF, true))
     printer.bold(false)
-    printer.println(pad('  Efectivo:', 16) + pad(`${currency}${formatMoney(totalCash)}`, 16, true))
-    printer.println(pad('  Tarjeta:', 16) + pad(`${currency}${formatMoney(totalCard)}`, 16, true))
+    printer.println(pad('  Efectivo:', HALF) + pad(`${currency}${formatMoney(totalCash)}`, HALF, true))
+    printer.println(pad('  Tarjeta:', HALF) + pad(`${currency}${formatMoney(totalCard)}`, HALF, true))
     // Solo si hubo: un negocio que no cobra por transferencia no ve una línea en cero, y
     // así el arqueo de los que ya existen no cambia.
     if (totalTransfer > 0) {
-      printer.println(pad('  Transferencia:', 16) + pad(`${currency}${formatMoney(totalTransfer)}`, 16, true))
+      printer.println(pad('  Transferencia:', HALF) + pad(`${currency}${formatMoney(totalTransfer)}`, HALF, true))
     }
   }
-  printer.println(pad('  Ordenes:', 16) + pad(String(totalOrders), 16, true))
+  printer.println(pad('  Ordenes:', HALF) + pad(String(totalOrders), HALF, true))
   printer.println(DASH)
   if (!blind) {
-    printer.println(pad('Efectivo esperado:', 16) + pad(`${currency}${formatMoney(expectedCash)}`, 16, true))
+    printer.println(pad('Efectivo esperado:', HALF) + pad(`${currency}${formatMoney(expectedCash)}`, HALF, true))
   }
-  printer.println(pad('Efectivo contado:', 16) + pad(`${currency}${formatMoney(closingCash)}`, 16, true))
+  printer.println(pad('Efectivo contado:', HALF) + pad(`${currency}${formatMoney(closingCash)}`, HALF, true))
   printer.println(LINE)
   if (!blind) {
     printer.bold(true)
-    printer.println(pad('Diferencia:', 16) + pad(`${diffSign}${currency}${formatMoney(diff)}`, 16, true))
+    printer.println(pad('Diferencia:', HALF) + pad(`${diffSign}${currency}${formatMoney(diff)}`, HALF, true))
     printer.bold(false)
   }
   if (notes) {
@@ -2374,5 +2457,8 @@ module.exports = {
   printKitchenComanda,
   printBarComanda,
   printClosingReport,
-  TEST_PRINTER_NAME
+  TEST_PRINTER_NAME,
+  // Expuesta para poder CAREAR el papel del modo sistema sin una impresora delante:
+  // se genera el HTML y se saca con `printToPDF`. Así se cazó el QR que no salía.
+  generateFiscalReceiptHTML
 }
