@@ -47,6 +47,39 @@ con el instalador hace fallar la actualización con un error de checksum.
 justifique. Al notarizar, macOS pasa a poder instalar solo y `CAN_SELF_INSTALL` deja de
 tener sentido.
 
+## Publicar un release — lo construye GitHub, y nace en BORRADOR
+**No se compila a mano para publicar.** `.github/workflows/release.yml` se dispara con un
+tag `v*` y construye las dos plataformas en runners nativos (`macos-latest` con
+`--mac --x64 --arm64`, `windows-latest` con `--win --x64`, `max-parallel: 1` por el cache de
+electron-builder, `--publish always`). Así salieron **todas** las releases, la 2.0.0
+incluida. El orden completo:
+
+1. `npm version` / bump a mano del `package.json`, commit, push.
+2. `git tag vX.Y.Z && git push origin vX.Y.Z` → el workflow construye y adjunta los 12
+   ficheros (3 instaladores, 2 zips, sus `.blockmap` y los dos `.yml`).
+3. **Publicar el release a mano:** `gh release edit vX.Y.Z --draft=false --latest`.
+4. **Solo entonces** subir `BRIDGE_VERSION` en el web
+   (`src/app/descargar/DescargarDesktop.tsx`, repo `menuqr`).
+5. Comprobar los enlaces **sin autenticar** (`curl -sI -L -o /dev/null -w '%{http_code}'`):
+   este repo es PÚBLICO y los clientes descargan de aquí, así que un 404 anónimo es un
+   fallo real. *(Al revés que en TitiPrint, que es privado: allá el 404 anónimo es normal
+   y no prueba nada — ya despistó un diagnóstico.)*
+
+**El paso 3 es obligatorio y es fácil de olvidar** porque el workflow dice `success` y la
+release ya tiene todos los adjuntos: `build.publish.releaseType` es `draft` en el
+`package.json`, así que nace en borrador — y **los adjuntos de un borrador no se descargan
+públicamente**. Por eso el paso 4 va después: con la página apuntando a una versión sin
+publicar, los tres botones dan 404 durante toda la ventana intermedia.
+
+**Dos pistas falsas que ya costaron tiempo, y por eso están escritas:**
+- Los adjuntos aparecen subidos por **`Sandytheking`**, no por `github-actions`, porque el
+  `GITHUB_TOKEN` del workflow actúa en nombre del repo. Eso **no** prueba que se subieran
+  a mano — mirar `gh run list` antes de concluir nada.
+- **«El `.exe` no se puede construir en esta Mac sin Wine» es FALSO.** electron-builder
+  24.13.3 trae su propio NSIS y produce un PE32 real de ~85 MB en una Mac Intel sin Wine
+  instalado (comprobado ejecutándolo, no deducido). Wine sólo haría falta para **firmar**.
+  Aunque para publicar no se usa el build local de todos modos: se usa el tag.
+
 ## El renombrado (2.0.0) — qué NO se puede tocar
 `build.productName` pasó a **TitiMenu**, pero **`name` (`titimenu-print-bridge`) y
 `appId` (`com.titimenu.printbridge`) NO se tocan, y no es cosmético**:
