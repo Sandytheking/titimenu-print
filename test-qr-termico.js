@@ -41,7 +41,9 @@ const store = { get: (k, d) => (k in config ? config[k] : d) }
 
 eval(extraer('qrGsK'))
 eval(extraer('anchoTermico'))
+eval(extraer('anchoTermicoDeLaConfig'))
 eval(extraer('pad'))
+eval(extraer('renglonImporte'))
 eval(extraer('center'))
 eval(extraer('imprimirQrTermico'))
 
@@ -141,22 +143,135 @@ async function prueba(nombre, fn) {
       'vuelve a haber llamadas a .raw():\n' + usos.map(([n, l]) => `      ${n}: ${l.trim()}`).join('\n'))
   })
 
+  console.log('\nUN SOLO CENTRADO, Y NINGÚN COMANDO DE VELOCIDAD')
+
+  // Lo que se comprueba aquí son BYTES de verdad: se arma el encabezado como lo arman
+  // ahora las plantillas (alineación de la impresora, texto sin rellenar) y se mira el
+  // buffer que saldría por el cable.
+  const bufferDeEncabezado = (textos) => {
+    const p = nuevaImpresora()
+    p.alignCenter()
+    textos.forEach(t => p.println(t))
+    p.alignLeft()
+    return p.getBuffer()
+  }
+  const ESC_a_1 = [0x1B, 0x61, 0x01]   // centrar
+  const ESC_a_0 = [0x1B, 0x61, 0x00]   // izquierda
+  const GS_s    = [0x1D, 0x73]         // la velocidad: lo que imprimía la "S" suelta
+
+  // Los renglones reales del encabezado fiscal de E320000015515.
+  const ENCABEZADO = ['Sandy Burger SRL', 'RNC: 132752155', 'Factura de Consumo Electrónica', 'E320000015515']
+
+  await prueba('con el centrado de la impresora, ningún renglón lleva relleno izquierdo', () => {
+    const buf = bufferDeEncabezado(ENCABEZADO)
+    assert.ok(contiene(buf, ESC_a_1), 'falta la orden de centrar')
+    // Se parte el buffer por saltos de línea y se mira cada trozo de TEXTO imprimible.
+    const renglones = buf.toString('latin1')
+      .split('\n')
+      .map(r => r.replace(/[\x00-\x1F]/g, ''))     // fuera las órdenes ESC/GS
+      .filter(r => r.trim().length > 0)
+    assert.ok(renglones.length >= ENCABEZADO.length, `esperaba ${ENCABEZADO.length} renglones, hay ${renglones.length}`)
+    const conRelleno = renglones.filter(r => r.startsWith(' '))
+    assert.deepEqual(conRelleno, [],
+      'estos renglones llevan relleno a la izquierda Y centrado de impresora — es el\n' +
+      '      centrado doble que corría el texto a la derecha:\n' +
+      conRelleno.map(r => `        «${r}»`).join('\n'))
+  })
+
+  await prueba('el texto va literal al buffer, sin espacios añadidos', () => {
+    const buf = bufferDeEncabezado(ENCABEZADO)
+    for (const t of ENCABEZADO) {
+      // `sanitizeForThermal` quita las tildes, así que se compara sin ellas.
+      const plano = t.normalize('NFD').replace(/[̀-ͯ]/g, '')
+      assert.ok(buf.includes(plano), `no encontré «${plano}» literal en el buffer`)
+      assert.ok(!buf.includes(' ' + plano), `«${plano}» aparece con un espacio delante`)
+    }
+  })
+
+  await prueba('el buffer no lleva el comando de velocidad GS s', () => {
+    const buf = bufferDeEncabezado(ENCABEZADO)
+    assert.ok(!contiene(buf, GS_s),
+      'apareció GS s (0x1D 0x73) en el buffer: esta impresora lo imprime como una «S» ' +
+      'suelta y descuadra la primera regla')
+  })
+
+  await prueba('printer.js ya no manda el comando de velocidad en ninguna parte', () => {
+    const sospechas = src.split('\n')
+      .map((l, i) => [i + 1, l])
+      .filter(([, l]) => /0x1D,\s*0x73|printSpeed/.test(l))
+      .filter(([, l]) => !l.trim().startsWith('*') && !l.trim().startsWith('//'))
+    assert.deepEqual(sospechas, [],
+      'volvió el comando de velocidad:\n' + sospechas.map(([n, l]) => `      ${n}: ${l.trim()}`).join('\n'))
+  })
+
+  await prueba('ninguna plantilla vuelve a centrar dos veces', () => {
+    // El guardia estático que ata las 8 plantillas al contrato de arriba: bajo
+    // `alignCenter` se imprime el texto pelado, nunca `center()`.
+    const dobles = src.split('\n')
+      .map((l, i) => [i + 1, l])
+      .filter(([, l]) => /printer\.println\(center\(|printer\.print\(center\(/.test(l))
+    assert.deepEqual(dobles, [],
+      'hay centrado doble otra vez:\n' + dobles.map(([n, l]) => `      ${n}: ${l.trim()}`).join('\n'))
+  })
+
   console.log('\nEL ANCHO SIGUE AL PAPEL CONFIGURADO')
 
-  await prueba('80 mm son 48 columnas y 58 mm son 32', () => {
-    assert.equal(anchoTermico('80mm').W, 48)
-    assert.equal(anchoTermico('58mm').W, 32)
-    assert.equal(anchoTermico(undefined).W, 48, 'sin configurar debe asumir 80 mm')
-    assert.equal(anchoTermico('80mm').HALF, 24)
-    assert.equal(anchoTermico('80mm').LINE.length, 48)
-    assert.equal(anchoTermico('58mm').DASH.length, 32)
+  await prueba('80 mm son 48 columnas y 58 mm son 32, UNA VEZ configurado', () => {
+    assert.equal(anchoTermico('80mm', true).W, 48)
+    assert.equal(anchoTermico('58mm', true).W, 32)
+    assert.equal(anchoTermico('80mm', true).HALF, 24)
+    assert.equal(anchoTermico('80mm', true).LINE.length, 48)
+    assert.equal(anchoTermico('58mm', true).DASH.length, 32)
+  })
+
+  await prueba('SIN configurar se queda en 32 columnas — el papel de siempre', () => {
+    // El bridge se autoactualiza solo en Windows. Un negocio que nunca pasó por la
+    // configuración no puede amanecer con los tickets a otro ancho, así que mientras no
+    // haya marca explícita manda el comportamiento histórico: 32 columnas.
+    assert.equal(anchoTermico('80mm', false).W, 32, 'un 80mm no explícito debe seguir en 32')
+    assert.equal(anchoTermico('80mm', undefined).W, 32)
+    assert.equal(anchoTermico(undefined, false).W, 32)
+    assert.equal(anchoTermico('58mm', false).W, 32, 'en 58 mm da 32 por los dos caminos')
+    assert.equal(anchoTermico('80mm', false).LINE.length, 32)
+  })
+
+  await prueba('la config decide: la marca explícita es la que abre el paso a 48', () => {
+    config = { paperWidth: '80mm' }                            // nunca guardada
+    assert.equal(anchoTermicoDeLaConfig().W, 32)
+    config = { paperWidth: '80mm', paperWidthExplicit: true }   // guardada
+    assert.equal(anchoTermicoDeLaConfig().W, 48)
+    config = { paperWidth: '58mm', paperWidthExplicit: true }
+    assert.equal(anchoTermicoDeLaConfig().W, 32)
+    config = {}                                                // equipo recién instalado
+    assert.equal(anchoTermicoDeLaConfig().W, 32)
   })
 
   await prueba('un renglón de importe ocupa el ancho entero', () => {
-    const { W, HALF } = anchoTermico('80mm')
+    const { W, HALF } = anchoTermico('80mm', true)
     const renglon = pad('TOTAL:', HALF) + pad('RD$810.00', HALF, true)
     assert.equal(renglon.length, W, `el renglón mide ${renglon.length}, no ${W}`)
     assert.ok(renglon.endsWith('RD$810.00'), 'el importe debe quedar pegado al borde derecho')
+  })
+
+  await prueba('un renglón de concepto+importe NUNCA se pasa del ancho', () => {
+    // El patrón viejo (`max(1, W - left - right)`) se pasaba una columna con nombres
+    // largos y la térmica envolvía el importe al renglón siguiente. En una factura eso
+    // se lee como otro concepto.
+    for (const W of [32, 48]) {
+      for (const nombre of ['1x Pizza Pepperoni Pers', '1x Pizza Pepperoni Personal Extra Grande con Todo',
+                            '2x Refresco', '10x Chicharron de cerdo con yuca y aguacate']) {
+        const r = renglonImporte(nombre, 'RD$690.00', W)
+        assert.ok(r.length <= W, `«${r}» mide ${r.length} en un papel de ${W}`)
+        assert.ok(r.endsWith('RD$690.00'), `el importe se recortó: «${r}»`)
+      }
+    }
+  })
+
+  await prueba('el importe manda: se recorta el concepto, nunca el precio', () => {
+    const r = renglonImporte('1x Un nombre absurdamente largo de producto', 'RD$1000.00', 32)
+    assert.equal(r.length, 32)
+    assert.ok(r.endsWith('RD$1000.00'))
+    assert.ok(r.startsWith('1x Un nombre'), `se recortó por el lado equivocado: «${r}»`)
   })
 
   await prueba('ninguna plantilla térmica fija el ancho a mano', () => {

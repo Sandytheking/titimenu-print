@@ -142,16 +142,41 @@ la del local aparece solo en el membrete (línea 3), nunca como dirección de cl
 `printPOSReceipt` NO copia ese fallback a propósito (ver v1.2.0).
 
 ## LECCIONES DE SANGRE
-1. **Cero emojis en payloads de impresión.** Las ESC/POS no soportan emojis: los imprimen
+1. **`printer.raw()` NO escribe en el buffer — nunca se usa. Para bytes crudos, `append()`.**
+   `raw()` hace `Interface.execute()` (`node-thermal-printer/lib/core.js:470`) y manda los
+   bytes por su cuenta, pero la ruta USB de este bridge imprime con `getBuffer()` +
+   `sendRawToPrinter()`: lo que va por `raw()` acaba en **el fichero temporal dummy** y no
+   llega al papel. Costó la 2.1.0 entera (el QR de la factura fiscal no salía, con todo lo
+   demás perfecto) y había una segunda instancia dormida: el comando de velocidad, que por
+   eso nunca se había aplicado en USB. `test-qr-termico.js` prohíbe `.raw(` en todo el
+   fichero.
+   **Y los bytes crudos que la impresora no reconoce los imprime como TEXTO:** ese mismo
+   comando de velocidad (`GS s`), ya bufferizado, sacaba una «S» suelta al principio del
+   ticket en una 2Connect POS80 y descuadraba la primera regla. Se eliminó: un comando
+   vendor-specific que no está en el estándar no se manda «por si acaso».
+2. **Un cambio de FORMATO del papel le cambia el ticket a todos los negocios de golpe,
+   porque el bridge se autoactualiza en Windows.** Y el defecto de una preferencia no
+   prueba que nadie la eligiera: hasta la 2.1.0 todas las plantillas térmicas imprimían a
+   32 columnas ignorando `paperWidth`, así que el `80mm` guardado era lo que traía el
+   desplegable, no una decisión. **`store.has()` no distingue**: `save-config` escribe
+   siempre la clave. La intención no se puede reconstruir hacia atrás, así que un cambio
+   así necesita **marca explícita nueva** (`paperWidthExplicit`), con el comportamiento
+   histórico como default, y el valor efectivo IMPRESO en la página de prueba para que sea
+   diagnosticable. Ver `anchoTermico`.
+3. **Un solo centrado.** El relleno manual de `center()` se SUMA a `alignCenter()` del
+   hardware: el texto se va a la derecha, y más cuanto más corto. Bajo `alignCenter` se
+   imprime el texto pelado; `center()` es sólo para el modo test, que no tiene impresora
+   que alinee. Pasó en 32 renglones de 5 plantillas a la vez.
+4. **Cero emojis en payloads de impresión.** Las ESC/POS no soportan emojis: los imprimen
    como `??`. Todo texto que va a papel (labels, líneas, "Envío", "Delivery") es ASCII puro.
    Ni en el payload que manda el web, ni hardcodeado en las plantillas de `printer.js`.
-2. **Los bridges son software INSTALADO, desincronizado del web.** El web deploya atómico
+5. **Los bridges son software INSTALADO, desincronizado del web.** El web deploya atómico
    para todos; los bridges se actualizan cuando el cliente quiere. Toda interpretación de
    datos del payload debe TOLERAR versiones viejas y nuevas: si reconoce un valor crudo lo
    traduce, si no lo reconoce lo imprime TAL CUAL — nunca coacciona un valor real a un default
    (p.ej. método de pago desconocido → NO "Efectivo", eso imprime dinero falso en papel).
    Ver `translatePaymentMethod` en `printer.js`. Así el orden de despliegue deja de importar.
-3. **Un archivo nuevo NO viaja solo: `build.files` de package.json es una lista blanca.**
+6. **Un archivo nuevo NO viaja solo: `build.files` de package.json es una lista blanca.**
    El 1.3.0 se publicó y no arrancaba —`Cannot find module './bridgeAuth'`— porque el módulo
    nuevo de la credencial de equipo no estaba listado y quedó fuera del `app.asar`. En dev
    funcionaba (los módulos se cargan del disco), así que el error solo aparece en el

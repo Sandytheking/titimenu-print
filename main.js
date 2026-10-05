@@ -933,7 +933,6 @@ ipcMain.handle('get-config', () => {
     printerBar: store.has('printerBar') ? store.get('printerBar') : legacyPrinter,
     printMode: store.get('printMode', 'thermal'),
     paperWidth: store.get('paperWidth', '80mm'),
-    printSpeed: store.get('printSpeed', 1),
     httpPort: activePort || store.get('httpPort', null),
     version: app.getVersion()
   }
@@ -949,7 +948,15 @@ ipcMain.handle('save-config', async (_event, config) => {
   store.set('printerBar', config.printerBar || '')
   store.set('printMode', config.printMode || 'thermal')
   store.set('paperWidth', config.paperWidth || '80mm')
-  store.set('printSpeed', parseInt(config.printSpeed) || 1)
+  // La marca de que el ancho se eligió a conciencia, no que es el que traía el formulario.
+  //
+  // Hace falta porque el bridge se autoactualiza solo en Windows y hasta la 2.1.0 TODOS
+  // los tickets salían a 32 columnas sin mirar `paperWidth`. Esta clave no se puede
+  // deducir hacia atrás: `save-config` siempre ha escrito `paperWidth` con lo que mandaba
+  // el desplegable —que arranca en `80mm`—, así que `store.has('paperWidth')` es cierto
+  // para todo el que haya guardado la configuración alguna vez. Sin esta marca, el ancho
+  // se queda en 32 y el papel sale como el negocio lo conoce. Ver `anchoTermico`.
+  store.set('paperWidthExplicit', true)
 
   // Los datos del negocio ya NO se leen de `businesses`: llegan en el canje de la credencial.
   // Con credencial, esto reconecta con el JWT del equipo; sin ella, avisa qué falta.

@@ -114,19 +114,66 @@ function pad(str, len, right = false) {
  * El ancho del papel térmico, en COLUMNAS, y las dos reglas que se dibujan con él.
  *
  * ## Por qué existe
- * Las cuatro plantillas térmicas —recibo de POS, delivery, factura fiscal y arqueo—
- * tenían `const W = 32` a mano, y 32 columnas es papel de **58 mm**. En un rollo de
- * 80 mm, que es el que usan todos los negocios, el texto ocupaba dos tercios del papel
- * y los importes alineados a la derecha caían en el medio: el `paperWidth` de la
- * configuración no lo leía nadie en esta rama (la de HTML sí, en `getReceiptStyles`).
+ * Las plantillas térmicas tenían `const W = 32` a mano, y 32 columnas es papel de
+ * **58 mm**. En un rollo de 80 mm el texto ocupaba dos tercios y los importes alineados
+ * a la derecha caían en el medio: el `paperWidth` de la configuración no lo leía nadie en
+ * esta rama (la de HTML sí, en `getReceiptStyles`).
  *
  * 48 columnas es fuente A en 80 mm (576 puntos de cabeza / 12 por carácter); 32 lo es en
  * 58 mm (384 / 12). `HALF` es el ancho de cada mitad para los renglones de
  * `pad(etiqueta, HALF) + pad(importe, HALF, true)`, que es como se alinea a la derecha.
+ *
+ * ## Por qué hace falta `explicito` y no basta `paperWidth`
+ * El bridge **se autoactualiza solo en Windows**, así que un cambio de ancho le cambia el
+ * papel a todos los negocios a la vez, sin que nadie lo pida. Y hasta la 2.1.0 TODOS
+ * imprimían a 32 columnas pasara lo que pasara, así que el `paperWidth` guardado no
+ * significa «elegí este ancho»: significa «esto es lo que tenía el desplegable».
+ *
+ * Peor: **`store.has('paperWidth')` no sirve para distinguirlo.** `save-config` escribe
+ * siempre la clave con lo que manda el formulario, y el desplegable arranca en `80mm`,
+ * así que cualquier negocio que haya guardado la configuración alguna vez —es decir,
+ * todos, porque hay que guardar la impresora para usar el bridge— tiene `80mm` escrito
+ * sin haberlo pensado nunca. La intención no quedó registrada en ninguna parte y no se
+ * puede reconstruir hacia atrás.
+ *
+ * Por eso: **sin marca explícita, 32 columnas** —el comportamiento de siempre, idéntico
+ * al que ese negocio ya conoce— y 48 sólo cuando `paperWidthExplicit` dice que alguien
+ * pasó por la configuración y la guardó. Un negocio en 58 mm da 32 por los dos caminos,
+ * así que para él nada cambia nunca.
  */
-function anchoTermico(paperWidth) {
-  const W = paperWidth === '58mm' ? 32 : 48
+function anchoTermico(paperWidth, explicito) {
+  const W = (explicito && paperWidth !== '58mm') ? 48 : 32
   return { W, HALF: W / 2, LINE: '='.repeat(W), DASH: '-'.repeat(W) }
+}
+
+/**
+ * Un renglón de «concepto a la izquierda, importe a la derecha» que SIEMPRE cabe.
+ *
+ * ## Por qué no basta con rellenar de espacios
+ * Las ocho plantillas hacían `left + ' '.repeat(Math.max(1, W - left - right)) + right`.
+ * Ese `max(1, …)` garantiza un espacio de separación, pero **a cambio deja que el renglón
+ * se pase del ancho**: con un nombre largo, 23 + 1 + 9 = 33 columnas en un papel de 32, y
+ * la térmica envuelve el sobrante a la línea siguiente. El importe aparece solo en el
+ * renglón de abajo, que en un documento fiscal se lee como otra cosa.
+ *
+ * Se vio midiendo los bytes reales de `1x Pizza Pepperoni Pers` + `RD$690.00`: 33
+ * columnas. Es el mismo síntoma que la regla de `=` que se pasaba un carácter, y por eso
+ * se arregla aquí y no en cada plantilla: **el importe no se recorta nunca y el concepto
+ * cede el espacio**, porque un nombre a medias se entiende y un precio a medias, no.
+ */
+function renglonImporte(left, right, W) {
+  const sitio = W - String(right).length - 1          // 1 columna de separación mínima
+  const concepto = String(left).length > sitio ? String(left).slice(0, Math.max(0, sitio)) : String(left)
+  const huecos = W - concepto.length - String(right).length
+  return concepto + ' '.repeat(Math.max(1, huecos)) + right
+}
+
+/** El ancho que toca a ESTE equipo según su configuración guardada. */
+function anchoTermicoDeLaConfig() {
+  return anchoTermico(
+    store.get('paperWidth', '80mm'),
+    store.get('paperWidthExplicit', false),
+  )
 }
 
 function center(str, width = 32) {
@@ -424,7 +471,6 @@ const IP_RE = /^(\d{1,3}\.){3}\d{1,3}$/
 
 async function createPrinter(printerName) {
   console.log('[createPrinter] printerName recibido:', JSON.stringify(printerName))
-  const printSpeed = parseInt(store.get('printSpeed', 1))
 
   const instantiate = (iface) => {
     const p = new ThermalPrinter({
@@ -436,12 +482,6 @@ async function createPrinter(printerName) {
       breakLine: BreakLine.WORD,
       options: { timeout: 5000 }
     })
-    if (printSpeed > 1) {
-      console.log('[printer] Setting print speed:', printSpeed)
-      // `append`, no `raw`: en la ruta USB `raw` escribe en la interfaz dummy y el
-      // comando no llegaba nunca a la impresora — misma causa que el QR perdido.
-      p.append(Buffer.from([0x1D, 0x73, printSpeed]))
-    }
     // Saneo en la FRONTERA: se envuelven los dos métodos que reciben texto, en la única
     // fábrica de impresoras. Así ninguna de las 7 plantillas tiene que acordarse de sanear
     // —ni las que se agreguen— y da igual de dónde venga la cadena.
@@ -1298,7 +1338,7 @@ async function printPOSReceipt(order, printerName, businessInfo) {
   const address = info.address || ''
   const currency = cur
 
-  const { W, HALF, LINE, DASH } = anchoTermico(paperWidth)
+  const { W, HALF, LINE, DASH } = anchoTermicoDeLaConfig()
   const now = new Date()
   const dateStr = now.toLocaleDateString('es-DO', { day: '2-digit', month: '2-digit', year: 'numeric' }) + '  ' + now.toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' })
   const items = order.items || order.order_items || []
@@ -1396,8 +1436,7 @@ async function printPOSReceipt(order, printerName, businessInfo) {
     ...items.map(item => {
       const left = `${item.quantity || item.qty || 1}x ${item.name || item.product_name || ''}`
       const right = `${currency}${formatMoney((item.unit_price || item.price || 0) * (item.quantity || item.qty || 1))}`
-      const spaces = W - left.length - right.length
-      return left + ' '.repeat(Math.max(1, spaces)) + right
+      return renglonImporte(left, right, W)
     }),
     DASH,
     ...(showBreakdown ? [
@@ -1439,13 +1478,13 @@ async function printPOSReceipt(order, printerName, businessInfo) {
 
   printer.alignCenter()
   printer.println(LINE)
-  printer.println(center(bizName, W))
-  if (legalName) printer.println(center(legalName, W))
-  if (rnc) printer.println(center(`RNC: ${rnc}`, W))
-  if (address) printer.println(center(address, W))
-  printer.println(center(`** ${displayLabel} **`, W))
-  printer.println(center(dateStr, W))
-  if (cashierName) printer.println(center(`Cajero/a: ${cashierName}`, W))
+  printer.println(bizName)
+  if (legalName) printer.println(legalName)
+  if (rnc) printer.println(`RNC: ${rnc}`)
+  if (address) printer.println(address)
+  printer.println(`** ${displayLabel} **`)
+  printer.println(dateStr)
+  if (cashierName) printer.println(`Cajero/a: ${cashierName}`)
   printer.println(LINE)
   printer.alignLeft()
   // Bloque del cliente: SOLO si vino en el payload (cero regresión en mostrador).
@@ -1458,8 +1497,7 @@ async function printPOSReceipt(order, printerName, businessInfo) {
   items.forEach(item => {
     const left = `${item.quantity || item.qty || 1}x ${item.name || item.product_name || ''}`
     const right = `${currency}${formatMoney((item.unit_price || item.price || 0) * (item.quantity || item.qty || 1))}`
-    const spaces = W - left.length - right.length
-    printer.println(left + ' '.repeat(Math.max(1, spaces)) + right)
+    printer.println(renglonImporte(left, right, W))
   })
   printer.println(DASH)
   if (showBreakdown) {
@@ -1601,7 +1639,7 @@ async function printTableComanda(order, printerName, businessInfo, tableInfo = {
     return
   }
 
-  const { W, LINE } = anchoTermico(paperWidth)
+  const { W, LINE } = anchoTermicoDeLaConfig()
   const now = new Date()
   const dateStr = now.toLocaleDateString('es-DO', { day: '2-digit', month: '2-digit', year: 'numeric' }) + '  ' + now.toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' })
   const tableLabel = tableInfo?.table_label || order.table_label || tableInfo?.table_number || order.table_number || order.table_id || '?'
@@ -1646,9 +1684,9 @@ async function printTableComanda(order, printerName, businessInfo, tableInfo = {
   printer.alignCenter()
   printer.println(LINE)
   printer.bold(true)
-  printer.println(center(`** COMANDA - ${formatTableLabel(tableLabel)} **`))
+  printer.println(`** COMANDA - ${formatTableLabel(tableLabel)} **`)
   printer.bold(false)
-  printer.println(center(dateStr))
+  printer.println(dateStr)
   printer.println(LINE)
   printer.alignLeft()
 
@@ -1669,7 +1707,7 @@ async function printTableComanda(order, printerName, businessInfo, tableInfo = {
 
   printer.alignCenter()
   printer.println(LINE)
-  printer.println(center(`Orden #${shortId}`))
+  printer.println(`Orden #${shortId}`)
   printer.println(LINE)
   printer.cut()
   if (isTCP) {
@@ -1707,7 +1745,7 @@ async function printDeliveryTicket(order, printerName, businessInfo) {
   const rnc = info.rnc || ''
   const address = info.address || ''
 
-  const { W, HALF, LINE, DASH } = anchoTermico(paperWidth)
+  const { W, HALF, LINE, DASH } = anchoTermicoDeLaConfig()
   const now = new Date()
   const dateStr = now.toLocaleDateString('es-DO', { day: '2-digit', month: '2-digit', year: 'numeric' }) + '  ' + now.toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' })
   const typeLabel = (order.order_type || 'delivery').toUpperCase()
@@ -1750,8 +1788,7 @@ async function printDeliveryTicket(order, printerName, businessInfo) {
       ...items.map(item => {
         const left = `${item.quantity || item.qty || 1}x ${item.name || item.product_name || ''}`
         const right = `${currency}${formatMoney((item.unit_price || item.price || 0) * (item.quantity || item.qty || 1))}`
-        const spaces = W - left.length - right.length
-        return left + ' '.repeat(Math.max(1, spaces)) + right
+        return renglonImporte(left, right, W)
       }),
       DASH,
       ...((deliveryFee > 0 || hasDiscount) ? [
@@ -1782,14 +1819,14 @@ async function printDeliveryTicket(order, printerName, businessInfo) {
 
   printer.alignCenter()
   printer.println(LINE)
-  printer.println(center(bizName, W))
-  if (legalName) printer.println(center(legalName, W))
-  if (rnc) printer.println(center(`RNC: ${rnc}`, W))
-  if (address) printer.println(center(address, W))
+  printer.println(bizName)
+  if (legalName) printer.println(legalName)
+  if (rnc) printer.println(`RNC: ${rnc}`)
+  if (address) printer.println(address)
   printer.bold(true)
-  printer.println(center(`** ${typeLabel} **`))
+  printer.println(`** ${typeLabel} **`)
   printer.bold(false)
-  printer.println(center(dateStr))
+  printer.println(dateStr)
   printer.println(LINE)
   printer.alignLeft()
   printer.println(`Cliente: ${customerName}`)
@@ -1798,8 +1835,7 @@ async function printDeliveryTicket(order, printerName, businessInfo) {
   items.forEach(item => {
     const left = `${item.quantity || item.qty || 1}x ${item.name || item.product_name || ''}`
     const right = `${currency}${formatMoney((item.unit_price || item.price || 0) * (item.quantity || item.qty || 1))}`
-    const spaces = W - left.length - right.length
-    printer.println(left + ' '.repeat(Math.max(1, spaces)) + right)
+    printer.println(renglonImporte(left, right, W))
   })
   printer.println(DASH)
   if (deliveryFee > 0 || hasDiscount) {
@@ -1839,14 +1875,23 @@ async function printTestPage(printerName, businessName) {
     return
   }
 
-  const { W, LINE } = anchoTermico(paperWidth)
+  const { W, LINE } = anchoTermicoDeLaConfig()
+  // El ancho EFECTIVO, impreso. Puede no coincidir con `paperWidth`: mientras nadie haya
+  // guardado la configuración, el papel sigue a 32 columnas aunque el desplegable diga
+  // 80 mm (ver `anchoTermico`). Decirlo en el papel es lo único que convierte eso en algo
+  // diagnosticable en vez de un misterio.
+  const explicito = store.get('paperWidthExplicit', false)
+  const lineaAncho = explicito
+    ? `Papel: ${paperWidth} - ${W} columnas`
+    : `Papel: ${W} columnas (sin configurar)`
   const lines = [
     LINE,
     center('TitiMenu', W),
     center(businessName || 'Mi Negocio', W),
     LINE,
     center('Impresora configurada OK!', W),
-    center(`Papel: ${paperWidth} (${W} columnas)`, W),
+    center(lineaAncho, W),
+    ...(explicito ? [] : [center('Guarda la configuracion', W), center('para usar el ancho real', W)]),
     center(new Date().toLocaleString('es-DO'), W),
     LINE,
     '[CORTE]'
@@ -1874,8 +1919,13 @@ async function printTestPage(printerName, businessName) {
   printer.println(businessName || 'Mi Negocio')
   printer.println(LINE)
   printer.println('Impresora configurada OK!')
-  // El ancho configurado, IMPRESO: así la página de prueba sirve para comprobarlo.
-  printer.println(`Papel: ${paperWidth} (${W} columnas)`)
+  // El ancho EFECTIVO, impreso: es lo que hace diagnosticable que un equipo siga a 32
+  // columnas porque nadie ha guardado la configuración todavía.
+  printer.println(lineaAncho)
+  if (!explicito) {
+    printer.println('Guarda la configuracion')
+    printer.println('para usar el ancho real')
+  }
   printer.println(new Date().toLocaleString('es-DO'))
   printer.println(LINE)
   printer.cut()
@@ -1903,7 +1953,7 @@ async function printFiscalReceipt(data, printerName) {
     return
   }
 
-  const { W, HALF, LINE, DASH } = anchoTermico(paperWidth)
+  const { W, HALF, LINE, DASH } = anchoTermicoDeLaConfig()
 
   const bizName = data.business_name || 'MI NEGOCIO'
   const legalName = data.legal_name || ''
@@ -1936,8 +1986,7 @@ async function printFiscalReceipt(data, printerName) {
     ...items.map(item => {
       const left = `${item.qty || 1}x ${item.name || ''}`
       const right = `${currency}${formatMoney(item.subtotal || (item.price * (item.qty || 1)) || 0)}`
-      const spaces = W - left.length - right.length
-      return left + ' '.repeat(Math.max(1, spaces)) + right
+      return renglonImporte(left, right, W)
     }),
     DASH,
     pad('Base imponible:', HALF) + pad(`${currency}${formatMoney(subtotal)}`, HALF, true),
@@ -1988,20 +2037,20 @@ async function printFiscalReceipt(data, printerName) {
     printer.alignCenter()
     printer.println(LINE)
     const razonCab = F.emisorNombre || (Rh ? Rh.negocioNombre : '')
-    printer.println(center(razonCab, W))
+    printer.println(razonCab)
     const comercialCab = F.nombreComercial || (Rh ? Rh.negocioNombreComercial : '')
     if (comercialCab && comercialCab !== razonCab) {
-      printer.println(center(comercialCab, W))
+      printer.println(comercialCab)
     }
     const rncCab = F.emisorRnc || (Rh ? Rh.negocioRnc : '')
     const dirCab = F.emisorDireccion || (Rh ? Rh.negocioDireccion : '')
-    if (rncCab) printer.println(center(`RNC: ${rncCab}`, W))
-    if (dirCab) printer.println(center(dirCab, W))
+    if (rncCab) printer.println(`RNC: ${rncCab}`)
+    if (dirCab) printer.println(dirCab)
     printer.println(LINE)
     printer.bold(true)
-    printer.println(center(F.titulo, W))
+    printer.println(F.titulo)
     printer.bold(false)
-    printer.println(center(F.encf, W))
+    printer.println(F.encf)
     printer.alignLeft()
     const fechaCab = F.fechaEmision || (Rh ? Rh.fecha : '')
     if (fechaCab) printer.println(`Fecha emision: ${fechaCab}`)
@@ -2016,8 +2065,7 @@ async function printFiscalReceipt(data, printerName) {
       R.items.forEach(i => {
         const left = `${i.qty}x ${i.name}`
         const right = `${cur}${formatMoney(i.subtotal)}`
-        const spaces = W - left.length - right.length
-        printer.println(left + ' '.repeat(Math.max(1, spaces)) + right)
+        printer.println(renglonImporte(left, right, W))
       })
       if (R.descuento) printer.println(pad('Descuento:', HALF) + pad(`-${cur}${formatMoney(R.descuento)}`, HALF, true))
       if (R.envio) printer.println(pad('Envio:', HALF) + pad(`${cur}${formatMoney(R.envio)}`, HALF, true))
@@ -2045,8 +2093,7 @@ async function printFiscalReceipt(data, printerName) {
     F.lineas.forEach(l => {
       const left = l.cantidad ? `${l.cantidad}x ${l.nombre}` : l.nombre
       const right = `${cur}${l.monto}`
-      const spaces = W - left.length - right.length
-      printer.println(left + ' '.repeat(Math.max(1, spaces)) + right)
+        printer.println(renglonImporte(left, right, W))
       // El descuento del cupón va DEBAJO de su línea, con sangría: es de esa línea y no
       // del total. Al final haría creer que se descuenta del total.
       if (l.descuento) {
@@ -2101,24 +2148,23 @@ async function printFiscalReceipt(data, printerName) {
   // QR, porque la URL firmada no viaja en el contrato viejo.
   printer.alignCenter()
   printer.println(LINE)
-  printer.println(center(bizName, W))
-  if (legalName) printer.println(center(legalName, W))
-  printer.println(center(`RNC: ${rnc}`, W))
-  if (address) printer.println(center(address, W))
+  printer.println(bizName)
+  if (legalName) printer.println(legalName)
+  printer.println(`RNC: ${rnc}`)
+  if (address) printer.println(address)
   printer.println(LINE)
   printer.bold(true)
-  printer.println(center('COMPROBANTE FISCAL', W))
+  printer.println('COMPROBANTE FISCAL')
   printer.bold(false)
-  printer.println(center(ncf, W))
-  printer.println(center(ncfLabel, W))
+  printer.println(ncf)
+  printer.println(ncfLabel)
   printer.alignLeft()
   printer.println(`Fecha: ${dateStr}`)
   printer.println(LINE)
   items.forEach(item => {
     const left = `${item.qty || 1}x ${item.name || ''}`
     const right = `${currency}${formatMoney(item.subtotal || (item.price * (item.qty || 1)) || 0)}`
-    const spaces = W - left.length - right.length
-    printer.println(left + ' '.repeat(Math.max(1, spaces)) + right)
+    printer.println(renglonImporte(left, right, W))
   })
   printer.println(DASH)
   printer.println(pad('Base imponible:', HALF) + pad(`${currency}${formatMoney(subtotal)}`, HALF, true))
@@ -2163,7 +2209,7 @@ async function printStationComanda(stationTitle, items, printerName, orderInfo, 
     return
   }
 
-  const { W, LINE } = anchoTermico(paperWidth)
+  const { W, LINE } = anchoTermicoDeLaConfig()
   const now = new Date()
   const dateStr = now.toLocaleDateString('es-DO', { day: '2-digit', month: '2-digit', year: 'numeric' }) + '  ' + now.toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' })
 
@@ -2197,9 +2243,9 @@ async function printStationComanda(stationTitle, items, printerName, orderInfo, 
   printer.alignCenter()
   printer.println(LINE)
   printer.bold(true)
-  printer.println(center(`** ${stationTitle} - ${formatTableLabel(tableLabel)} **`))
+  printer.println(`** ${stationTitle} - ${formatTableLabel(tableLabel)} **`)
   printer.bold(false)
-  printer.println(center(dateStr))
+  printer.println(dateStr)
   printer.println(LINE)
   printer.alignLeft()
 
@@ -2208,7 +2254,7 @@ async function printStationComanda(stationTitle, items, printerName, orderInfo, 
 
   printer.alignCenter()
   printer.println(LINE)
-  printer.println(center(`Orden #${shortId}`))
+  printer.println(`Orden #${shortId}`)
   printer.println(LINE)
   printer.cut()
   if (isTCP) {
@@ -2276,7 +2322,7 @@ async function printClosingReport(data, printerName) {
   const printMode = store.get('printMode', 'thermal')
   const paperWidth = store.get('paperWidth', '80mm')
 
-  const { W, HALF, LINE, DASH } = anchoTermico(paperWidth)
+  const { W, HALF, LINE, DASH } = anchoTermicoDeLaConfig()
 
   const bizName = data.business_name || store.get('businessName', 'MI NEGOCIO')
   const openedAt = data.opened_at || ''

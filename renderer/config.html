@@ -868,17 +868,6 @@
             </div>
           </div>
 
-          <div class="field">
-            <label>⚡ Velocidad Impresión</label>
-            <div class="select-wrapper">
-              <select id="printSpeedSelect">
-                <option value="1">Lenta (100mm/s)</option>
-                <option value="2">Normal (150mm/s)</option>
-                <option value="3">Rápida (200mm/s)</option>
-                <option value="4">Máxima (300mm/s)</option>
-              </select>
-            </div>
-          </div>
         </div>
 
         <div class="buttons">
@@ -994,9 +983,6 @@
         if (config.paperWidth) {
           document.getElementById('paperWidthSelect').value = config.paperWidth
         }
-        if (config.printSpeed !== undefined && config.printSpeed !== null) {
-          document.getElementById('printSpeedSelect').value = config.printSpeed
-        }
         if (config.version) {
           document.getElementById('appVersion').textContent = `v${config.version}`
         }
@@ -1077,7 +1063,6 @@
       const printerBar = document.getElementById('printerBarSelect').value
       const printMode = document.getElementById('printModeSelect').value
       const paperWidth = document.getElementById('paperWidthSelect').value
-      const printSpeed = parseInt(document.getElementById('printSpeedSelect').value) || 1
 
       if (!businessId)   { showMessage('Ingresa tu Business ID', 'error'); return }
       if (!businessName) { showMessage('Ingresa el nombre del negocio', 'error'); return }
@@ -1105,8 +1090,7 @@
           printerCocina,
           printerBar,
           printMode,
-          paperWidth,
-          printSpeed
+          paperWidth
         })
         addLog('Configuración guardada — iniciando conexión...', 'warn')
       } catch (e) {
@@ -1153,7 +1137,6 @@
         document.getElementById('printerBarSelect').selectedIndex = 0
         document.getElementById('printModeSelect').value = 'thermal'
         document.getElementById('paperWidthSelect').value = '80mm'
-        document.getElementById('printSpeedSelect').value = '1'
         document.getElementById('statusDot').className = 'status-dot'
         document.getElementById('statusText').textContent = 'Desconectado'
         isSaving = false
