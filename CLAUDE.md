@@ -172,20 +172,27 @@ la del local aparece solo en el membrete (línea 3), nunca como dirección de cl
    una elección: cuando la respuesta correcta depende del hardware que hay sobre la mesa,
    se pregunta. El guardado se rechaza **entero** si falta, antes de escribir una sola
    clave, para no dejar impresoras nuevas con el ancho sin resolver.
-3. **Un solo centrado.** El relleno manual de `center()` se SUMA a `alignCenter()` del
+3. **Lo que se imprime NO puede perder caracteres.** Recortar el concepto para que cupiera
+   el importe borró medio producto en una comanda real: «1x Hamburguesas (Belcon, Papas
+   Frita,» sin «Doble Carne, Refresco, Jugo de naranja». En una comanda eso es comida mal
+   preparada; en un recibo, una reclamación. El concepto **envuelve** con sangría y el
+   importe se queda en la primera línea (`renglonImporte`, que devuelve un array). Y el
+   ancho que se le pasa es el EFECTIVO: con `setTextSize(_, 1)` cada carácter ocupa dos
+   columnas, así que son W/2.
+4. **Un solo centrado.** El relleno manual de `center()` se SUMA a `alignCenter()` del
    hardware: el texto se va a la derecha, y más cuanto más corto. Bajo `alignCenter` se
    imprime el texto pelado; `center()` es sólo para el modo test, que no tiene impresora
    que alinee. Pasó en 32 renglones de 5 plantillas a la vez.
-4. **Cero emojis en payloads de impresión.** Las ESC/POS no soportan emojis: los imprimen
+5. **Cero emojis en payloads de impresión.** Las ESC/POS no soportan emojis: los imprimen
    como `??`. Todo texto que va a papel (labels, líneas, "Envío", "Delivery") es ASCII puro.
    Ni en el payload que manda el web, ni hardcodeado en las plantillas de `printer.js`.
-5. **Los bridges son software INSTALADO, desincronizado del web.** El web deploya atómico
+6. **Los bridges son software INSTALADO, desincronizado del web.** El web deploya atómico
    para todos; los bridges se actualizan cuando el cliente quiere. Toda interpretación de
    datos del payload debe TOLERAR versiones viejas y nuevas: si reconoce un valor crudo lo
    traduce, si no lo reconoce lo imprime TAL CUAL — nunca coacciona un valor real a un default
    (p.ej. método de pago desconocido → NO "Efectivo", eso imprime dinero falso en papel).
    Ver `translatePaymentMethod` en `printer.js`. Así el orden de despliegue deja de importar.
-6. **Un archivo nuevo NO viaja solo: `build.files` de package.json es una lista blanca.**
+7. **Un archivo nuevo NO viaja solo: `build.files` de package.json es una lista blanca.**
    El 1.3.0 se publicó y no arrancaba —`Cannot find module './bridgeAuth'`— porque el módulo
    nuevo de la credencial de equipo no estaba listado y quedó fuera del `app.asar`. En dev
    funcionaba (los módulos se cargan del disco), así que el error solo aparece en el

@@ -542,6 +542,11 @@ function applyBusinessInfo(biz) {
   if (biz.slug) store.set('businessSlug', biz.slug)
   store.set('businessLegalName', biz.legal_name || '')
   store.set('businessRnc', biz.rnc || '')
+  // El RNC con el que se EMITE puede no ser el del registro del negocio: quien factura
+  // electrónicamente tiene `ecf_rnc`, y es el que la DGII tiene firmado en el e-CF. El
+  // papel fiscal ya lo usaba (viene dentro de la representación) y el recibo normal no,
+  // así que los dos tickets del mismo negocio salían con RNC distintos. Ver `rncQueEmite`.
+  store.set('businessEcfRnc', biz.ecf_rnc || '')
   store.set('businessAddress', biz.address || '')
   store.set('businessCurrency', biz.currency || 'RD$')
   store.set('businessItbisEnabled', biz.itbis_enabled === true)
@@ -620,6 +625,7 @@ async function onNewOrder(type, order) {
     name: businessName,
     legalName: store.get('businessLegalName', ''),
     rnc: store.get('businessRnc', ''),
+    ecfRnc: store.get('businessEcfRnc', ''),
     address: store.get('businessAddress', ''),
     currency: store.get('businessCurrency', 'RD$'),
     itbisEnabled: store.get('businessItbisEnabled', false),
@@ -792,6 +798,7 @@ async function handlePrintJob(endpoint, data) {
       name: data.business_name || store.get('businessName', 'Mi Negocio'),
       legalName: store.get('businessLegalName', ''),
       rnc: store.get('businessRnc', ''),
+      ecfRnc: store.get('businessEcfRnc', ''),
       address: store.get('businessAddress', ''),
       currency: data.currency || store.get('businessCurrency', 'RD$'),
       itbisEnabled: store.get('businessItbisEnabled', false),

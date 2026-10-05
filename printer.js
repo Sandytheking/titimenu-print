@@ -121,7 +121,7 @@ function pad(str, len, right = false) {
  *
  * 48 columnas es fuente A en 80 mm (576 puntos de cabeza / 12 por carácter); 32 lo es en
  * 58 mm (384 / 12). `HALF` es el ancho de cada mitad para los renglones de
- * `pad(etiqueta, HALF) + pad(importe, HALF, true)`, que es como se alinea a la derecha.
+ * `renglonImporte(etiqueta, importe, W)`, que es como se alinea a la derecha.
  *
  * ## Por qué hace falta `explicito` y no basta `paperWidth`
  * El bridge **se autoactualiza solo en Windows**, así que un cambio de ancho le cambia el
@@ -143,7 +143,7 @@ function pad(str, len, right = false) {
  */
 function anchoTermico(paperWidth, explicito) {
   const W = (explicito && paperWidth !== '58mm') ? 48 : 32
-  return { W, HALF: W / 2, LINE: '='.repeat(W), DASH: '-'.repeat(W) }
+  return { W, LINE: '='.repeat(W), DASH: '-'.repeat(W) }
 }
 
 /**
@@ -158,15 +158,51 @@ function anchoTermico(paperWidth, explicito) {
  *
  * Se vio midiendo los bytes reales de `1x Pizza Pepperoni Pers` + `RD$690.00`: 33
  * columnas. Es el mismo síntoma que la regla de `=` que se pasaba un carácter, y por eso
- * se arregla aquí y no en cada plantilla: **el importe no se recorta nunca y el concepto
- * cede el espacio**, porque un nombre a medias se entiende y un precio a medias, no.
+ * se arregla aquí y no en cada plantilla.
+ *
+ * ## Y NO se recorta: se envuelve
+ * La primera versión recortaba el concepto, y en el papel real se perdió medio producto:
+ * «1x Hamburguesas (Belcon, Papas Frita,» sin «Doble Carne, Refresco, Jugo de naranja».
+ * En una comanda eso es comida mal preparada y en un recibo es una reclamación. Lo que se
+ * imprime no puede perder caracteres NUNCA.
+ *
+ * Así que el concepto **envuelve** a las líneas siguientes con sangría, y el importe se
+ * queda en la PRIMERA —es el dato que se busca con el dedo, y además así un concepto de
+ * tres líneas no parece tres productos—. Devuelve un array de líneas, no una.
  */
 function renglonImporte(left, right, W) {
-  const sitio = W - String(right).length - 1          // 1 columna de separación mínima
-  const concepto = String(left).length > sitio ? String(left).slice(0, Math.max(0, sitio)) : String(left)
-  const huecos = W - concepto.length - String(right).length
-  return concepto + ' '.repeat(Math.max(1, huecos)) + right
+  const imp = String(right)
+  const texto = String(left)
+  const sitio = W - imp.length - 1          // 1 columna de separación mínima
+  const alinear = (t) => t + ' '.repeat(Math.max(1, W - t.length - imp.length)) + imp
+
+  if (texto.length <= sitio) return [alinear(texto)]
+
+  // No cabe: ENVUELVE. El importe se queda en la primera línea —es lo que el cliente
+  // busca con el dedo— y el concepto sigue debajo con sangría, para que se lea como
+  // continuación y no como otro producto.
+  const SANGRIA = '   '
+  const partes = []
+  let actual = ''
+  const limite = () => (partes.length === 0 ? sitio : W - SANGRIA.length)
+  for (const palabra of texto.split(' ')) {
+    const cand = actual ? `${actual} ${palabra}` : palabra
+    if (cand.length <= limite()) { actual = cand; continue }
+    if (actual) { partes.push(actual); actual = '' }
+    // Una sola palabra más larga que la línea (un nombre sin espacios): se trocea, que
+    // es lo único que se puede hacer sin perder caracteres.
+    let resto = palabra
+    while (resto.length > limite()) {
+      partes.push(resto.slice(0, limite()))
+      resto = resto.slice(limite())
+    }
+    actual = resto
+  }
+  if (actual) partes.push(actual)
+
+  return [alinear(partes[0]), ...partes.slice(1).map(p => SANGRIA + p)]
 }
+
 
 /** El ancho que toca a ESTE equipo según su configuración guardada. */
 function anchoTermicoDeLaConfig() {
@@ -404,7 +440,7 @@ function respaldoFiscal(data) {
   }
 }
 
-function taxBreakdownLines(order, businessInfo, currency, total, HALF = 16) {
+function taxBreakdownLines(order, businessInfo, currency, total, W = 32) {
   let base = order.tax_base != null ? parseFloat(order.tax_base) : null
   let itbis = order.itbis != null ? parseFloat(order.itbis) : null
 
@@ -417,10 +453,12 @@ function taxBreakdownLines(order, businessInfo, currency, total, HALF = 16) {
   }
   if (!(itbis > 0)) return []
   return [
-    '-'.repeat(32),
+    // La regla seguía al ancho de 32 fijo: en un rollo de 80 mm salía a dos tercios,
+    // justo debajo del TOTAL. Es la que se le escapó al barrido de anchos.
+    '-'.repeat(W),
     'Incluye ITBIS 18%',
-    pad('Base imponible:', HALF) + pad(`${currency}${formatMoney(base)}`, HALF, true),
-    pad('ITBIS (18%):', HALF) + pad(`${currency}${formatMoney(itbis)}`, HALF, true),
+    ...renglonImporte('Base imponible:', `${currency}${formatMoney(base)}`, W),
+    ...renglonImporte('ITBIS (18%):', `${currency}${formatMoney(itbis)}`, W),
   ]
 }
 
@@ -440,17 +478,87 @@ const SPECIAL_SPACES = /[\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000]/g
 const INVISIBLES = /[\u200B-\u200D\u2060\uFEFF]/g
 const AM_PM = /\b([ap])\.\s*(m)\./gi
 
+/**
+ * Pliega a ASCII: «Piñacola» → «Pinacola», «Jamón» → «Jamon».
+ *
+ * ## Por qué, si la impresora tiene code page
+ * Porque la code page declarada y la que la impresora usa de verdad no siempre coinciden,
+ * y cuando no coinciden el acento sale como `?` o como otra letra — ya pasó con la
+ * factura. Plegar es feo pero es LEGIBLE y es igual en las dos rutas; un `?` en medio de
+ * un nombre no es ninguna de las dos cosas.
+ *
+ * Es el mismo plegado que hace `plegarAAscii` del módulo compartido (titimenu-escpos), que
+ * es lo que mantiene idéntico el papel del bridge y el de la app de Android. Si se toca
+ * allá, se toca aquí.
+ */
+const PLEGADOS = { 'ñ': 'n', 'Ñ': 'N', 'ç': 'c', 'Ç': 'C', 'ü': 'u', 'Ü': 'U',
+                   '¡': '!', '¿': '?', '–': '-', '—': '-', '“': '"', '”': '"', '‘': "'", '’': "'" }
+
+function plegarAAscii(text) {
+  return text
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')          // fuera los diacríticos ya separados
+    .replace(/[^\x00-\x7F]/g, (c) => PLEGADOS[c] !== undefined ? PLEGADOS[c] : c)
+}
+
 function sanitizeForThermal(text) {
   if (typeof text !== 'string') return text
-  return text
+  return plegarAAscii(text
     .replace(SPECIAL_SPACES, ' ')
     .replace(INVISIBLES, '')
     // "p. m." → "p.m.": como se escribe en RD y ahorra dos caracteres de la línea.
-    .replace(AM_PM, '$1.$2.')
+    .replace(AM_PM, '$1.$2.'))
+}
+
+/**
+ * El RNC con el que este negocio EMITE.
+ *
+ * Mismo criterio que `rncQueEmite` del web: manda `ecf_rnc` si existe y si no, `rnc`. Un
+ * negocio que factura electrónicamente puede tener registrado un RNC y emitir con otro, y
+ * el que vale es con el que la DGII tiene firmados sus comprobantes.
+ *
+ * Se vio en papel: la factura fiscal decía RNC 132752155 —lo trae la representación del
+ * e-CF, ya resuelto por el servidor— y el recibo de la misma venta decía 656473623, que
+ * es `businesses.rnc`. Dos tickets del mismo negocio con dos RNC distintos.
+ */
+function rncQueEmite(businessInfo) {
+  const info = businessInfo || {}
+  const ecf = (info.ecfRnc || info.ecf_rnc || '').trim()
+  return ecf || (info.rnc || '').trim()
 }
 
 function formatMoney(amount) {
   return parseFloat(amount || 0).toFixed(2)
+}
+
+/**
+ * A dónde va esta comanda. Nunca «?».
+ *
+ * ## Por qué existe
+ * En el papel salió **«** COMANDA COCINA - ? **»**. No era un carácter que la impresora no
+ * soportara: era el dato, que no existe. La cadena de respaldos terminaba en un `'?'`
+ * literal y `formatTableLabel(null)` devolvía otro, así que una venta de MOSTRADOR —que
+ * por definición no tiene mesa— imprimía un interrogante donde el cocinero busca a dónde
+ * mandar el plato.
+ *
+ * Una comanda sin destino es una comanda inútil, así que si no hay mesa se dice lo que sí
+ * se sabe: el tipo de pedido y su número. El `'?'` deja de ser alcanzable.
+ */
+function etiquetaDestino(tableInfo, orderInfo) {
+  const info = orderInfo || {}
+  const mesa = tableInfo?.table_label || info.table_label ||
+               tableInfo?.table_number || info.table_number || info.table_id
+  if (mesa) return formatTableLabel(mesa)
+
+  const tipo = String(info.order_type || '').toLowerCase()
+  if (tipo === 'delivery') return 'DELIVERY'
+  if (tipo === 'takeout') return 'PARA LLEVAR'
+
+  const numero = info.order_number
+  if (numero) return `POS #${numero}`
+
+  const id = info.id || tableInfo?.order_id
+  return id ? `ORDEN #${String(id).slice(-6).toUpperCase()}` : 'MOSTRADOR'
 }
 
 function formatTableLabel(label) {
@@ -757,7 +865,7 @@ function generatePOSReceiptHTML(order, businessInfo, paperWidth) {
   const info = typeof businessInfo === 'string' ? { name: businessInfo } : (businessInfo || {})
   const bizName = info.name || 'MI NEGOCIO'
   const legalName = info.legalName || ''
-  const rnc = info.rnc || ''
+  const rnc = rncQueEmite(info)
   const address = info.address || ''
   const currency = info.currency || store.get('businessCurrency', 'RD$')
   
@@ -923,7 +1031,7 @@ function generatePOSReceiptHTML(order, businessInfo, paperWidth) {
 function generateTableComandaHTML(order, businessName, paperWidth, tableInfo = {}) {
   const now = new Date()
   const dateStr = now.toLocaleDateString('es-DO', { day: '2-digit', month: '2-digit', year: 'numeric' }) + ' ' + now.toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' })
-  const tableLabel = tableInfo?.table_label || order.table_label || tableInfo?.table_number || order.table_number || order.table_id || '?'
+  const destino = etiquetaDestino(tableInfo, order)
   const shortId = (tableInfo?.order_id || order.id || '000000').slice(-6).toUpperCase()
   const items = order.items || order.order_items || []
   // `isDrink` es el MISMO criterio que usa main.js para elegir impresora. Antes filtraba
@@ -970,7 +1078,7 @@ function generateTableComandaHTML(order, businessName, paperWidth, tableInfo = {
   const bodyContent = `
     <div class="header center">
       <div class="text-large">** COMANDA **</div>
-      <div class="tag" style="font-size: 1.15em;">${formatTableLabel(tableLabel)}</div>
+      <div class="tag" style="font-size: 1.15em;">${destino}</div>
       <div class="business-details" style="margin-top: 4px;">${dateStr}</div>
     </div>
     
@@ -998,7 +1106,7 @@ function generateDeliveryTicketHTML(order, businessInfo, paperWidth) {
   // cliente y sin él no dice de qué negocio salió.
   const bizName = info.name || 'MI NEGOCIO'
   const legalName = info.legalName || ''
-  const rnc = info.rnc || ''
+  const rnc = rncQueEmite(info)
   const address = info.address || ''
   const now = new Date()
   const dateStr = now.toLocaleDateString('es-DO', { day: '2-digit', month: '2-digit', year: 'numeric' }) + ' ' + now.toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' })
@@ -1200,7 +1308,7 @@ async function generateFiscalReceiptHTML(data, paperWidth) {
   // ── CAMINO VIEJO: payload sin `representacion` ───────────────────────────
   const bizName = data.business_name || 'MI NEGOCIO'
   const legalName = data.legal_name || ''
-  const rnc = data.rnc || ''
+  const rnc = rncQueEmite(data)
   const address = data.address || ''
   const ncf = data.ncf || ''
   const ncfType = data.ncf_type || 'B02'
@@ -1334,11 +1442,11 @@ async function printPOSReceipt(order, printerName, businessInfo) {
   const info = typeof businessInfo === 'string' ? { name: businessInfo } : (businessInfo || {})
   const bizName = info.name || 'MI NEGOCIO'
   const legalName = info.legalName || ''
-  const rnc = info.rnc || ''
+  const rnc = rncQueEmite(info)
   const address = info.address || ''
   const currency = cur
 
-  const { W, HALF, LINE, DASH } = anchoTermicoDeLaConfig()
+  const { W, LINE, DASH } = anchoTermicoDeLaConfig()
   const now = new Date()
   const dateStr = now.toLocaleDateString('es-DO', { day: '2-digit', month: '2-digit', year: 'numeric' }) + '  ' + now.toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' })
   const items = order.items || order.order_items || []
@@ -1433,23 +1541,23 @@ async function printPOSReceipt(order, printerName, businessInfo) {
       ...(customerAddr ? [`Dir: ${customerAddr}`] : []),
       DASH,
     ] : []),
-    ...items.map(item => {
+    ...items.flatMap(item => {
       const left = `${item.quantity || item.qty || 1}x ${item.name || item.product_name || ''}`
       const right = `${currency}${formatMoney((item.unit_price || item.price || 0) * (item.quantity || item.qty || 1))}`
       return renglonImporte(left, right, W)
     }),
     DASH,
     ...(showBreakdown ? [
-      pad('SUBTOTAL:', HALF) + pad(`${currency}${formatMoney(subtotal)}`, HALF, true),
-      ...(hasDiscount ? [pad(discountLabel, HALF) + pad(`-${currency}${formatMoney(discount)}`, HALF, true)] : []),
-      ...(hasDeliveryFee ? [pad('Envio:', HALF) + pad(`${currency}${formatMoney(deliveryFee)}`, HALF, true)] : []),
-      ...(hasTip ? [pad(tipLabel, HALF) + pad(`+${currency}${formatMoney(tip)}`, HALF, true)] : []),
+      ...renglonImporte('SUBTOTAL:', `${currency}${formatMoney(subtotal)}`, W),
+      ...(hasDiscount ? renglonImporte(discountLabel, `-${currency}${formatMoney(discount)}`, W) : []),
+      ...(hasDeliveryFee ? renglonImporte('Envio:', `${currency}${formatMoney(deliveryFee)}`, W) : []),
+      ...(hasTip ? renglonImporte(tipLabel, `+${currency}${formatMoney(tip)}`, W) : []),
     ] : []),
-    pad('TOTAL:', HALF) + pad(`${currency}${formatMoney(total)}`, HALF, true),
-    ...taxBreakdownLines(order, businessInfo, currency, total, HALF),
+    ...renglonImporte('TOTAL:', `${currency}${formatMoney(total)}`, W),
+    ...taxBreakdownLines(order, businessInfo, currency, total, W),
     `Pago: ${payMethod}`,
-    ...(showCashLines ? [pad('Recibido:', HALF) + pad(`${currency}${formatMoney(cashGiven)}`, HALF, true)] : []),
-    ...(showCashLines && changeGiven > 0 ? [pad('Cambio:', HALF) + pad(`${currency}${formatMoney(changeGiven)}`, HALF, true)] : []),
+    ...(showCashLines ? renglonImporte('Recibido:', `${currency}${formatMoney(cashGiven)}`, W) : []),
+    ...(showCashLines && changeGiven > 0 ? renglonImporte('Cambio:', `${currency}${formatMoney(changeGiven)}`, W) : []),
     ...(orderNotes ? [`Nota: ${orderNotes}`] : []),
     LINE,
     center('¡Gracias por su visita!', W),
@@ -1497,23 +1605,23 @@ async function printPOSReceipt(order, printerName, businessInfo) {
   items.forEach(item => {
     const left = `${item.quantity || item.qty || 1}x ${item.name || item.product_name || ''}`
     const right = `${currency}${formatMoney((item.unit_price || item.price || 0) * (item.quantity || item.qty || 1))}`
-    printer.println(renglonImporte(left, right, W))
+    renglonImporte(left, right, W).forEach(l => printer.println(l))
   })
   printer.println(DASH)
   if (showBreakdown) {
-    printer.println(pad('SUBTOTAL:', HALF) + pad(`${currency}${formatMoney(subtotal)}`, HALF, true))
-    if (hasDiscount) printer.println(pad(discountLabel, HALF) + pad(`-${currency}${formatMoney(discount)}`, HALF, true))
-    if (hasDeliveryFee) printer.println(pad('Envio:', HALF) + pad(`${currency}${formatMoney(deliveryFee)}`, HALF, true))
-    if (hasTip) printer.println(pad(tipLabel, HALF) + pad(`+${currency}${formatMoney(tip)}`, HALF, true))
+    renglonImporte('SUBTOTAL:', `${currency}${formatMoney(subtotal)}`, W).forEach(l => printer.println(l))
+    if (hasDiscount) renglonImporte(discountLabel, `-${currency}${formatMoney(discount)}`, W).forEach(l => printer.println(l))
+    if (hasDeliveryFee) renglonImporte('Envio:', `${currency}${formatMoney(deliveryFee)}`, W).forEach(l => printer.println(l))
+    if (hasTip) renglonImporte(tipLabel, `+${currency}${formatMoney(tip)}`, W).forEach(l => printer.println(l))
   }
-  printer.println(pad('TOTAL:', HALF) + pad(`${currency}${formatMoney(total)}`, HALF, true))
-  taxBreakdownLines(order, businessInfo, currency, total, HALF).forEach(l => printer.println(l))
+  renglonImporte('TOTAL:', `${currency}${formatMoney(total)}`, W).forEach(l => printer.println(l))
+  taxBreakdownLines(order, businessInfo, currency, total, W).forEach(l => printer.println(l))
   printer.println(`Pago: ${payMethod}`)
   if (showCashLines) {
-    printer.println(pad('Recibido:', HALF) + pad(`${currency}${formatMoney(cashGiven)}`, HALF, true))
+    renglonImporte('Recibido:', `${currency}${formatMoney(cashGiven)}`, W).forEach(l => printer.println(l))
     if (changeGiven > 0) {
       printer.bold(true)
-      printer.println(pad('Cambio:', HALF) + pad(`${currency}${formatMoney(changeGiven)}`, HALF, true))
+      renglonImporte('Cambio:', `${currency}${formatMoney(changeGiven)}`, W).forEach(l => printer.println(l))
       printer.bold(false)
     }
   }
@@ -1642,7 +1750,7 @@ async function printTableComanda(order, printerName, businessInfo, tableInfo = {
   const { W, LINE } = anchoTermicoDeLaConfig()
   const now = new Date()
   const dateStr = now.toLocaleDateString('es-DO', { day: '2-digit', month: '2-digit', year: 'numeric' }) + '  ' + now.toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' })
-  const tableLabel = tableInfo?.table_label || order.table_label || tableInfo?.table_number || order.table_number || order.table_id || '?'
+  const destino = etiquetaDestino(tableInfo, order)
   const shortId = (tableInfo?.order_id || order.id || '000000').slice(-6).toUpperCase()
   const items = order.items || order.order_items || []
   // `isDrink` es el MISMO criterio que usa main.js para elegir impresora. Antes filtraba
@@ -1655,7 +1763,7 @@ async function printTableComanda(order, printerName, businessInfo, tableInfo = {
   if (isTestMode(printerName)) {
     const lines = [
       LINE,
-      center(`** COMANDA - ${formatTableLabel(tableLabel)} **`),
+      center(`** COMANDA - ${destino} **`),
       center(dateStr),
       LINE,
       ...(noteLines(order.notes)),
@@ -1684,7 +1792,7 @@ async function printTableComanda(order, printerName, businessInfo, tableInfo = {
   printer.alignCenter()
   printer.println(LINE)
   printer.bold(true)
-  printer.println(`** COMANDA - ${formatTableLabel(tableLabel)} **`)
+  printer.println(`** COMANDA - ${destino} **`)
   printer.bold(false)
   printer.println(dateStr)
   printer.println(LINE)
@@ -1742,10 +1850,10 @@ async function printDeliveryTicket(order, printerName, businessInfo) {
   // comida a la casa del cliente. El recibo del POS sí lo dibujaba desde siempre.
   const bizName = info.name || 'MI NEGOCIO'
   const legalName = info.legalName || ''
-  const rnc = info.rnc || ''
+  const rnc = rncQueEmite(info)
   const address = info.address || ''
 
-  const { W, HALF, LINE, DASH } = anchoTermicoDeLaConfig()
+  const { W, LINE, DASH } = anchoTermicoDeLaConfig()
   const now = new Date()
   const dateStr = now.toLocaleDateString('es-DO', { day: '2-digit', month: '2-digit', year: 'numeric' }) + '  ' + now.toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' })
   const typeLabel = (order.order_type || 'delivery').toUpperCase()
@@ -1785,19 +1893,19 @@ async function printDeliveryTicket(order, printerName, businessInfo) {
       `Cliente: ${customerName}`,
       `Tel: ${customerPhone}`,
       DASH,
-      ...items.map(item => {
+      ...items.flatMap(item => {
         const left = `${item.quantity || item.qty || 1}x ${item.name || item.product_name || ''}`
         const right = `${currency}${formatMoney((item.unit_price || item.price || 0) * (item.quantity || item.qty || 1))}`
         return renglonImporte(left, right, W)
       }),
       DASH,
       ...((deliveryFee > 0 || hasDiscount) ? [
-        pad('Subtotal:', HALF) + pad(`${currency}${formatMoney(subtotal)}`, HALF, true),
-        ...(hasDiscount ? [pad(discountLabel, HALF) + pad(`-${currency}${formatMoney(discount)}`, HALF, true)] : []),
-        ...(deliveryFee > 0 ? [pad('Envio:', HALF) + pad(`${currency}${formatMoney(deliveryFee)}`, HALF, true)] : []),
+        ...renglonImporte('Subtotal:', `${currency}${formatMoney(subtotal)}`, W),
+        ...(hasDiscount ? renglonImporte(discountLabel, `-${currency}${formatMoney(discount)}`, W) : []),
+        ...(deliveryFee > 0 ? renglonImporte('Envio:', `${currency}${formatMoney(deliveryFee)}`, W) : []),
       ] : []),
-      pad('TOTAL:', HALF) + pad(`${currency}${formatMoney(total)}`, HALF, true),
-      ...taxBreakdownLines(order, businessInfo, currency, total, HALF),
+      ...renglonImporte('TOTAL:', `${currency}${formatMoney(total)}`, W),
+      ...taxBreakdownLines(order, businessInfo, currency, total, W),
       ...(deliveryAddr ? [DASH, `Dir: ${deliveryAddr}`] : []),
       ...(orderNotes ? [`Nota: ${orderNotes}`] : []),
       LINE,
@@ -1835,16 +1943,16 @@ async function printDeliveryTicket(order, printerName, businessInfo) {
   items.forEach(item => {
     const left = `${item.quantity || item.qty || 1}x ${item.name || item.product_name || ''}`
     const right = `${currency}${formatMoney((item.unit_price || item.price || 0) * (item.quantity || item.qty || 1))}`
-    printer.println(renglonImporte(left, right, W))
+    renglonImporte(left, right, W).forEach(l => printer.println(l))
   })
   printer.println(DASH)
   if (deliveryFee > 0 || hasDiscount) {
-    printer.println(pad('Subtotal:', HALF) + pad(`${currency}${formatMoney(subtotal)}`, HALF, true))
-    if (hasDiscount) printer.println(pad(discountLabel, HALF) + pad(`-${currency}${formatMoney(discount)}`, HALF, true))
-    if (deliveryFee > 0) printer.println(pad('Envio:', HALF) + pad(`${currency}${formatMoney(deliveryFee)}`, HALF, true))
+    renglonImporte('Subtotal:', `${currency}${formatMoney(subtotal)}`, W).forEach(l => printer.println(l))
+    if (hasDiscount) renglonImporte(discountLabel, `-${currency}${formatMoney(discount)}`, W).forEach(l => printer.println(l))
+    if (deliveryFee > 0) renglonImporte('Envio:', `${currency}${formatMoney(deliveryFee)}`, W).forEach(l => printer.println(l))
   }
-  printer.println(pad('TOTAL:', HALF) + pad(`${currency}${formatMoney(total)}`, HALF, true))
-  taxBreakdownLines(order, businessInfo, currency, total, HALF).forEach(l => printer.println(l))
+  renglonImporte('TOTAL:', `${currency}${formatMoney(total)}`, W).forEach(l => printer.println(l))
+  taxBreakdownLines(order, businessInfo, currency, total, W).forEach(l => printer.println(l))
   if (deliveryAddr) {
     printer.println(DASH)
     printer.println(`Dir: ${deliveryAddr}`)
@@ -1884,6 +1992,13 @@ async function printTestPage(printerName, businessName) {
   const lineaAncho = explicito
     ? `Papel: ${paperWidth} - ${W} columnas`
     : `Papel: ${W} columnas (sin configurar)`
+  // Una regla graduada: si la impresora tiene MENOS columnas de las que creemos, aquí se
+  // ve —la regla se parte o se corta— y además se puede contar a ojo dónde acaba. Es el
+  // único modo de saber el ancho real del cabezal sin adivinarlo.
+  const regla = Array.from({ length: W }, (_, i) => {
+    const col = i + 1
+    return col % 10 === 0 ? String((col / 10) % 10) : (col % 5 === 0 ? '+' : '.')
+  }).join('')
   const lines = [
     LINE,
     center('TitiMenu', W),
@@ -1892,6 +2007,8 @@ async function printTestPage(printerName, businessName) {
     center('Impresora configurada OK!', W),
     center(lineaAncho, W),
     ...(explicito ? [] : [center('Guarda la configuracion', W), center('para usar el ancho real', W)]),
+    regla,
+    `|${'-'.repeat(Math.max(0, W - 2))}|`,
     center(new Date().toLocaleString('es-DO'), W),
     LINE,
     '[CORTE]'
@@ -1926,6 +2043,11 @@ async function printTestPage(printerName, businessName) {
     printer.println('Guarda la configuracion')
     printer.println('para usar el ancho real')
   }
+  // La regla va a la IZQUIERDA: centrada no serviría para medir desde el borde.
+  printer.alignLeft()
+  printer.println(regla)
+  printer.println(`|${'-'.repeat(Math.max(0, W - 2))}|`)
+  printer.alignCenter()
   printer.println(new Date().toLocaleString('es-DO'))
   printer.println(LINE)
   printer.cut()
@@ -1953,11 +2075,11 @@ async function printFiscalReceipt(data, printerName) {
     return
   }
 
-  const { W, HALF, LINE, DASH } = anchoTermicoDeLaConfig()
+  const { W, LINE, DASH } = anchoTermicoDeLaConfig()
 
   const bizName = data.business_name || 'MI NEGOCIO'
   const legalName = data.legal_name || ''
-  const rnc = data.rnc || ''
+  const rnc = rncQueEmite(data)
   const address = data.address || ''
   const ncf = data.ncf || ''
   const ncfType = data.ncf_type || 'B02'
@@ -1983,17 +2105,17 @@ async function printFiscalReceipt(data, printerName) {
     center(ncfLabel, W),
     `Fecha: ${dateStr}`,
     LINE,
-    ...items.map(item => {
+    ...items.flatMap(item => {
       const left = `${item.qty || 1}x ${item.name || ''}`
       const right = `${currency}${formatMoney(item.subtotal || (item.price * (item.qty || 1)) || 0)}`
       return renglonImporte(left, right, W)
     }),
     DASH,
-    pad('Base imponible:', HALF) + pad(`${currency}${formatMoney(subtotal)}`, HALF, true),
-    pad('ITBIS (18%):', HALF) + pad(`+${currency}${formatMoney(itbis)}`, HALF, true),
-    ...(hasTip ? [pad('Propina:', HALF) + pad(`+${currency}${formatMoney(tip)}`, HALF, true)] : []),
+    ...renglonImporte('Base imponible:', `${currency}${formatMoney(subtotal)}`, W),
+    ...renglonImporte('ITBIS (18%):', `+${currency}${formatMoney(itbis)}`, W),
+    ...(hasTip ? renglonImporte('Propina:', `+${currency}${formatMoney(tip)}`, W) : []),
     LINE,
-    pad('TOTAL:', HALF) + pad(`${currency}${formatMoney(total)}`, HALF, true),
+    ...renglonImporte('TOTAL:', `${currency}${formatMoney(total)}`, W),
     LINE,
     ...(data.client_name ? [
       `Cliente: ${data.client_name}`,
@@ -2065,13 +2187,13 @@ async function printFiscalReceipt(data, printerName) {
       R.items.forEach(i => {
         const left = `${i.qty}x ${i.name}`
         const right = `${cur}${formatMoney(i.subtotal)}`
-        printer.println(renglonImporte(left, right, W))
+        renglonImporte(left, right, W).forEach(l => printer.println(l))
       })
-      if (R.descuento) printer.println(pad('Descuento:', HALF) + pad(`-${cur}${formatMoney(R.descuento)}`, HALF, true))
-      if (R.envio) printer.println(pad('Envio:', HALF) + pad(`${cur}${formatMoney(R.envio)}`, HALF, true))
+      if (R.descuento) renglonImporte('Descuento:', `-${cur}${formatMoney(R.descuento)}`, W).forEach(l => printer.println(l))
+      if (R.envio) renglonImporte('Envio:', `${cur}${formatMoney(R.envio)}`, W).forEach(l => printer.println(l))
       printer.println(LINE)
       // SIN base ni ITBIS: los calcula la DGII por línea y sólo existen en el XML.
-      printer.println(pad('TOTAL:', HALF) + pad(`${cur}${formatMoney(R.total)}`, HALF, true))
+      renglonImporte('TOTAL:', `${cur}${formatMoney(R.total)}`, W).forEach(l => printer.println(l))
       printer.println(LINE)
       printer.alignCenter()
       printer.bold(true)
@@ -2093,21 +2215,21 @@ async function printFiscalReceipt(data, printerName) {
     F.lineas.forEach(l => {
       const left = l.cantidad ? `${l.cantidad}x ${l.nombre}` : l.nombre
       const right = `${cur}${l.monto}`
-        printer.println(renglonImporte(left, right, W))
+        renglonImporte(left, right, W).forEach(l => printer.println(l))
       // El descuento del cupón va DEBAJO de su línea, con sangría: es de esa línea y no
       // del total. Al final haría creer que se descuenta del total.
       if (l.descuento) {
-        printer.println(pad('   Descuento', HALF) + pad(`-${cur}${l.descuento}`, HALF, true))
+        renglonImporte('   Descuento', `-${cur}${l.descuento}`, W).forEach(l => printer.println(l))
       }
     })
 
     printer.println(DASH)
-    if (F.gravado) printer.println(pad('Base imponible:', HALF) + pad(`${cur}${F.gravado}`, HALF, true))
-    if (F.itbis)   printer.println(pad('ITBIS (18%):', HALF) + pad(`${cur}${F.itbis}`, HALF, true))
-    if (F.exento)  printer.println(pad('Monto exento:', HALF) + pad(`${cur}${F.exento}`, HALF, true))
-    if (F.propina) printer.println(pad('Propina legal:', HALF) + pad(`+${cur}${F.propina}`, HALF, true))
+    if (F.gravado) renglonImporte('Base imponible:', `${cur}${F.gravado}`, W).forEach(l => printer.println(l))
+    if (F.itbis)   renglonImporte('ITBIS (18%):', `${cur}${F.itbis}`, W).forEach(l => printer.println(l))
+    if (F.exento)  renglonImporte('Monto exento:', `${cur}${F.exento}`, W).forEach(l => printer.println(l))
+    if (F.propina) renglonImporte('Propina legal:', `+${cur}${F.propina}`, W).forEach(l => printer.println(l))
     printer.println(LINE)
-    printer.println(pad('TOTAL:', HALF) + pad(`${cur}${F.total}`, HALF, true))
+    renglonImporte('TOTAL:', `${cur}${F.total}`, W).forEach(l => printer.println(l))
     printer.println(LINE)
 
     printer.alignCenter()
@@ -2164,14 +2286,14 @@ async function printFiscalReceipt(data, printerName) {
   items.forEach(item => {
     const left = `${item.qty || 1}x ${item.name || ''}`
     const right = `${currency}${formatMoney(item.subtotal || (item.price * (item.qty || 1)) || 0)}`
-    printer.println(renglonImporte(left, right, W))
+    renglonImporte(left, right, W).forEach(l => printer.println(l))
   })
   printer.println(DASH)
-  printer.println(pad('Base imponible:', HALF) + pad(`${currency}${formatMoney(subtotal)}`, HALF, true))
-  printer.println(pad('ITBIS (18%):', HALF) + pad(`+${currency}${formatMoney(itbis)}`, HALF, true))
-  if (hasTip) printer.println(pad('Propina:', HALF) + pad(`+${currency}${formatMoney(tip)}`, HALF, true))
+  renglonImporte('Base imponible:', `${currency}${formatMoney(subtotal)}`, W).forEach(l => printer.println(l))
+  renglonImporte('ITBIS (18%):', `+${currency}${formatMoney(itbis)}`, W).forEach(l => printer.println(l))
+  if (hasTip) renglonImporte('Propina:', `+${currency}${formatMoney(tip)}`, W).forEach(l => printer.println(l))
   printer.println(LINE)
-  printer.println(pad('TOTAL:', HALF) + pad(`${currency}${formatMoney(total)}`, HALF, true))
+  renglonImporte('TOTAL:', `${currency}${formatMoney(total)}`, W).forEach(l => printer.println(l))
   printer.println(LINE)
   if (data.client_name) {
     printer.println(`Cliente: ${data.client_name}`)
@@ -2200,7 +2322,7 @@ async function printStationComanda(stationTitle, items, printerName, orderInfo, 
   const printMode = store.get('printMode', 'thermal')
   const paperWidth = store.get('paperWidth', '80mm')
   
-  const tableLabel = tableInfo?.table_label || orderInfo.table_label || tableInfo?.table_number || orderInfo.table_number || orderInfo.table_id || '?'
+  const destino = etiquetaDestino(tableInfo, orderInfo)
   const shortId = (tableInfo?.order_id || orderInfo.id || orderInfo.order_number || '000000').slice(-6).toUpperCase()
 
   if (printMode === 'system') {
@@ -2216,7 +2338,7 @@ async function printStationComanda(stationTitle, items, printerName, orderInfo, 
   if (isTestMode(printerName)) {
     const lines = [
       LINE,
-      center(`** ${stationTitle} - ${formatTableLabel(tableLabel)} **`),
+      center(`** ${stationTitle} - ${destino} **`),
       center(dateStr),
       LINE,
       ...(noteLines(orderInfo?.notes)),
@@ -2243,7 +2365,7 @@ async function printStationComanda(stationTitle, items, printerName, orderInfo, 
   printer.alignCenter()
   printer.println(LINE)
   printer.bold(true)
-  printer.println(`** ${stationTitle} - ${formatTableLabel(tableLabel)} **`)
+  printer.println(`** ${stationTitle} - ${destino} **`)
   printer.bold(false)
   printer.println(dateStr)
   printer.println(LINE)
@@ -2269,7 +2391,7 @@ async function printStationComanda(stationTitle, items, printerName, orderInfo, 
 function generateStationComandaHTML(stationTitle, items, orderInfo, paperWidth, tableInfo = {}) {
   const now = new Date()
   const dateStr = now.toLocaleDateString('es-DO', { day: '2-digit', month: '2-digit', year: 'numeric' }) + ' ' + now.toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' })
-  const tableLabel = tableInfo?.table_label || orderInfo.table_label || tableInfo?.table_number || orderInfo.table_number || orderInfo.table_id || '?'
+  const destino = etiquetaDestino(tableInfo, orderInfo)
   const shortId = (tableInfo?.order_id || orderInfo.id || orderInfo.order_number || '000000').slice(-6).toUpperCase()
 
   const itemsHtml = items.map(item => {
@@ -2287,7 +2409,7 @@ function generateStationComandaHTML(stationTitle, items, orderInfo, paperWidth, 
   const bodyContent = `
     <div class="header center">
       <div class="text-large">** ${stationTitle} **</div>
-      <div class="tag" style="font-size: 1.15em;">${formatTableLabel(tableLabel)}</div>
+      <div class="tag" style="font-size: 1.15em;">${destino}</div>
       <div class="business-details" style="margin-top: 4px;">${dateStr}</div>
     </div>
     
@@ -2322,7 +2444,7 @@ async function printClosingReport(data, printerName) {
   const printMode = store.get('printMode', 'thermal')
   const paperWidth = store.get('paperWidth', '80mm')
 
-  const { W, HALF, LINE, DASH } = anchoTermicoDeLaConfig()
+  const { W, LINE, DASH } = anchoTermicoDeLaConfig()
 
   const bizName = data.business_name || store.get('businessName', 'MI NEGOCIO')
   const openedAt = data.opened_at || ''
@@ -2355,24 +2477,24 @@ async function printClosingReport(data, printerName) {
       center(closedAt, W),
       ...(cashierName ? [center(`Cajero/a: ${cashierName}`, W)] : []),
       DASH,
-      pad('Apertura:', HALF) + pad(openedAt, HALF, true),
-      pad('Efectivo apertura:', HALF) + pad(`${currency}${formatMoney(openingCash)}`, HALF, true),
+      ...renglonImporte('Apertura:', openedAt, W),
+      ...renglonImporte('Efectivo apertura:', `${currency}${formatMoney(openingCash)}`, W),
       DASH,
       // Todo el dinero del turno bajo UNA sola puerta: en un cierre ciego basta con que
       // una línea de importe se escape para que el control no sirva.
       ...(blind ? [] : [
-        pad('Total ventas:', HALF) + pad(`${currency}${formatMoney(totalSales)}`, HALF, true),
-        pad('  Efectivo:', HALF) + pad(`${currency}${formatMoney(totalCash)}`, HALF, true),
-        pad('  Tarjeta:', HALF) + pad(`${currency}${formatMoney(totalCard)}`, HALF, true),
-        ...(totalTransfer > 0 ? [pad('  Transferencia:', HALF) + pad(`${currency}${formatMoney(totalTransfer)}`, HALF, true)] : []),
+        ...renglonImporte('Total ventas:', `${currency}${formatMoney(totalSales)}`, W),
+        ...renglonImporte('  Efectivo:', `${currency}${formatMoney(totalCash)}`, W),
+        ...renglonImporte('  Tarjeta:', `${currency}${formatMoney(totalCard)}`, W),
+        ...(totalTransfer > 0 ? renglonImporte('  Transferencia:', `${currency}${formatMoney(totalTransfer)}`, W) : []),
       ]),
-      pad('  Ordenes:', HALF) + pad(String(totalOrders), HALF, true),
+      ...renglonImporte('  Ordenes:', String(totalOrders), W),
       DASH,
-      ...(blind ? [] : [pad('Efectivo esperado:', HALF) + pad(`${currency}${formatMoney(expectedCash)}`, HALF, true)]),
+      ...(blind ? [] : renglonImporte('Efectivo esperado:', `${currency}${formatMoney(expectedCash)}`, W)),
       // El contado SÍ sale en el ciego: es lo que el propio empleado acaba de declarar.
-      pad('Efectivo contado:', HALF) + pad(`${currency}${formatMoney(closingCash)}`, HALF, true),
+      ...renglonImporte('Efectivo contado:', `${currency}${formatMoney(closingCash)}`, W),
       LINE,
-      ...(blind ? [] : [pad('Diferencia:', HALF) + pad(`${diffSign}${currency}${formatMoney(diff)}`, HALF, true)]),
+      ...(blind ? [] : renglonImporte('Diferencia:', `${diffSign}${currency}${formatMoney(diff)}`, W)),
       ...(notes ? [DASH, `Nota: ${notes}`] : []),
       DASH,
       center('Powered by TitiMenu', W),
@@ -2408,31 +2530,31 @@ async function printClosingReport(data, printerName) {
   if (cashierName) printer.println(`Cajero/a: ${cashierName}`)
   printer.println(DASH)
   printer.alignLeft()
-  printer.println(pad('Apertura:', HALF) + pad(openedAt, HALF, true))
-  printer.println(pad('Efectivo apertura:', HALF) + pad(`${currency}${formatMoney(openingCash)}`, HALF, true))
+  renglonImporte('Apertura:', openedAt, W).forEach(l => printer.println(l))
+  renglonImporte('Efectivo apertura:', `${currency}${formatMoney(openingCash)}`, W).forEach(l => printer.println(l))
   printer.println(DASH)
   if (!blind) {
     printer.bold(true)
-    printer.println(pad('Total ventas:', HALF) + pad(`${currency}${formatMoney(totalSales)}`, HALF, true))
+    renglonImporte('Total ventas:', `${currency}${formatMoney(totalSales)}`, W).forEach(l => printer.println(l))
     printer.bold(false)
-    printer.println(pad('  Efectivo:', HALF) + pad(`${currency}${formatMoney(totalCash)}`, HALF, true))
-    printer.println(pad('  Tarjeta:', HALF) + pad(`${currency}${formatMoney(totalCard)}`, HALF, true))
+    renglonImporte('  Efectivo:', `${currency}${formatMoney(totalCash)}`, W).forEach(l => printer.println(l))
+    renglonImporte('  Tarjeta:', `${currency}${formatMoney(totalCard)}`, W).forEach(l => printer.println(l))
     // Solo si hubo: un negocio que no cobra por transferencia no ve una línea en cero, y
     // así el arqueo de los que ya existen no cambia.
     if (totalTransfer > 0) {
-      printer.println(pad('  Transferencia:', HALF) + pad(`${currency}${formatMoney(totalTransfer)}`, HALF, true))
+      renglonImporte('  Transferencia:', `${currency}${formatMoney(totalTransfer)}`, W).forEach(l => printer.println(l))
     }
   }
-  printer.println(pad('  Ordenes:', HALF) + pad(String(totalOrders), HALF, true))
+  renglonImporte('  Ordenes:', String(totalOrders), W).forEach(l => printer.println(l))
   printer.println(DASH)
   if (!blind) {
-    printer.println(pad('Efectivo esperado:', HALF) + pad(`${currency}${formatMoney(expectedCash)}`, HALF, true))
+    renglonImporte('Efectivo esperado:', `${currency}${formatMoney(expectedCash)}`, W).forEach(l => printer.println(l))
   }
-  printer.println(pad('Efectivo contado:', HALF) + pad(`${currency}${formatMoney(closingCash)}`, HALF, true))
+  renglonImporte('Efectivo contado:', `${currency}${formatMoney(closingCash)}`, W).forEach(l => printer.println(l))
   printer.println(LINE)
   if (!blind) {
     printer.bold(true)
-    printer.println(pad('Diferencia:', HALF) + pad(`${diffSign}${currency}${formatMoney(diff)}`, HALF, true))
+    renglonImporte('Diferencia:', `${diffSign}${currency}${formatMoney(diff)}`, W).forEach(l => printer.println(l))
     printer.bold(false)
   }
   if (notes) {

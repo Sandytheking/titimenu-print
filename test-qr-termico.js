@@ -49,6 +49,14 @@ eval(extraer('renglonImporte'))
 eval(extraer('center'))
 eval(extraer('imprimirQrTermico'))
 eval(extraer('decidirAncho', srcMain))
+// Ojo: un `const` dentro de eval() NO sale al ámbito de fuera (las declaraciones de
+// función sí). Se convierte a `var` para poder usarlo aquí.
+eval(src.slice(src.indexOf('const PLEGADOS ='), src.indexOf('\n\nfunction plegarAAscii'))
+       .replace('const PLEGADOS', 'var PLEGADOS'))
+eval(extraer('plegarAAscii'))
+eval(extraer('formatTableLabel'))
+eval(extraer('etiquetaDestino'))
+eval(extraer('rncQueEmite'))
 
 const URL_QR = 'https://fc.dgii.gov.do/TesteCF/ConsultaTimbreFC?RncEmisor=132752155&ENCF=E320000015515&MontoTotal=810.00&CodigoSeguridad=aZECOS'
 
@@ -222,7 +230,6 @@ async function prueba(nombre, fn) {
   await prueba('80 mm son 48 columnas y 58 mm son 32, UNA VEZ configurado', () => {
     assert.equal(anchoTermico('80mm', true).W, 48)
     assert.equal(anchoTermico('58mm', true).W, 32)
-    assert.equal(anchoTermico('80mm', true).HALF, 24)
     assert.equal(anchoTermico('80mm', true).LINE.length, 48)
     assert.equal(anchoTermico('58mm', true).DASH.length, 32)
   })
@@ -302,32 +309,99 @@ async function prueba(nombre, fn) {
     assert.ok(/Mide el rollo/.test(ui), 'falta la ayuda para medir el rollo')
   })
 
-  await prueba('un renglón de importe ocupa el ancho entero', () => {
-    const { W, HALF } = anchoTermico('80mm', true)
-    const renglon = pad('TOTAL:', HALF) + pad('RD$810.00', HALF, true)
-    assert.equal(renglon.length, W, `el renglón mide ${renglon.length}, no ${W}`)
-    assert.ok(renglon.endsWith('RD$810.00'), 'el importe debe quedar pegado al borde derecho')
+  await prueba('un renglón de importe ocupa el ancho entero, a 48 y a 32', () => {
+    for (const W of [48, 32]) {
+      const [r] = renglonImporte('TOTAL:', 'RD$810.00', W)
+      assert.equal(r.length, W, `«${r}» mide ${r.length} y el papel es de ${W}`)
+      assert.ok(r.startsWith('TOTAL:'), 'la etiqueta va a la izquierda')
+      assert.ok(r.endsWith('RD$810.00'), 'el importe va pegado al borde derecho')
+    }
   })
 
-  await prueba('un renglón de concepto+importe NUNCA se pasa del ancho', () => {
-    // El patrón viejo (`max(1, W - left - right)`) se pasaba una columna con nombres
-    // largos y la térmica envolvía el importe al renglón siguiente. En una factura eso
-    // se lee como otro concepto.
-    for (const W of [32, 48]) {
-      for (const nombre of ['1x Pizza Pepperoni Pers', '1x Pizza Pepperoni Personal Extra Grande con Todo',
-                            '2x Refresco', '10x Chicharron de cerdo con yuca y aguacate']) {
-        const r = renglonImporte(nombre, 'RD$690.00', W)
-        assert.ok(r.length <= W, `«${r}» mide ${r.length} en un papel de ${W}`)
-        assert.ok(r.endsWith('RD$690.00'), `el importe se recortó: «${r}»`)
+  await prueba('a DOBLE ANCHO el renglón usa la mitad de columnas', () => {
+    // Con `setTextSize(_, 1)` cada carácter ocupa dos columnas, así que el ancho efectivo
+    // es la mitad: 24 en 80 mm y 16 en 58 mm. Si el llamador pasa el ancho entero, el
+    // renglón se parte en el papel y el importe aparece suelto en otra línea.
+    for (const [W, mitad] of [[48, 24], [32, 16]]) {
+      const [r] = renglonImporte('TOTAL:', 'RD$810.00', W / 2)
+      assert.equal(r.length, mitad, `a doble ancho el renglón debe medir ${mitad}`)
+      assert.ok(r.endsWith('RD$810.00'))
+    }
+  })
+
+  await prueba('un nombre largo con modificadores NO pierde ni un carácter', () => {
+    // El papel real: «1x Hamburguesas (Belcon, Papas Frita,» y se perdió «Doble Carne,
+    // Refresco, Jugo de naranja». Lo que se imprime no puede perder texto nunca.
+    const nombre = '1x Hamburguesas (Belcon, Papas Frita, Doble Carne, Refresco, Jugo de naranja)'
+    for (const W of [48, 32, 24]) {
+      const lineas = renglonImporte(nombre, 'RD$390.00', W)
+      const recuperado = lineas.join(' ').replace('RD$390.00', '').replace(/\s+/g, ' ').trim()
+      assert.equal(recuperado, nombre.replace(/\s+/g, ' ').trim(),
+        `a ${W} columnas se perdió texto:\n        ${lineas.join('\n        ')}`)
+    }
+  })
+
+  await prueba('ningún renglón supera NUNCA el ancho efectivo', () => {
+    const casos = [
+      '1x Hamburguesas (Belcon, Papas Frita, Doble Carne, Refresco, Jugo de naranja)',
+      '1x Papitas y Platanitos Chips', '2x Refresco', 'TOTAL:', 'Base imponible:',
+      '10x ' + 'Supercalifragilisticoespialidoso'.repeat(3),   // una palabra sin espacios
+    ]
+    for (const W of [48, 32, 24, 16]) {
+      for (const c of casos) {
+        for (const imp of ['RD$1.00', 'RD$390.00', 'RD$12,345.67']) {
+          renglonImporte(c, imp, W).forEach(l => {
+            assert.ok(l.length <= W, `«${l}» mide ${l.length} con W=${W}`)
+          })
+        }
       }
     }
   })
 
-  await prueba('el importe manda: se recorta el concepto, nunca el precio', () => {
-    const r = renglonImporte('1x Un nombre absurdamente largo de producto', 'RD$1000.00', 32)
-    assert.equal(r.length, 32)
-    assert.ok(r.endsWith('RD$1000.00'))
-    assert.ok(r.startsWith('1x Un nombre'), `se recortó por el lado equivocado: «${r}»`)
+  await prueba('el importe se queda en la PRIMERA línea y lo demás va con sangría', () => {
+    const lineas = renglonImporte('1x Un nombre largo de producto con muchos extras', 'RD$99.00', 32)
+    assert.ok(lineas.length > 1, 'este caso tiene que envolver')
+    assert.ok(lineas[0].endsWith('RD$99.00'), 'el importe va en la primera línea')
+    lineas.slice(1).forEach(l => {
+      assert.ok(l.startsWith('   '), `la continuación debe ir con sangría: «${l}»`)
+      assert.ok(!/RD\$/.test(l), 'no puede haber importes en las continuaciones')
+    })
+  })
+
+  await prueba('el plegado a ASCII no mueve la alineación', () => {
+    // El saneo corre DESPUÉS de calcular el ancho, así que si cambiara la longitud, el
+    // renglón ya alineado se descuadraría.
+    for (const t of ['Piñacola sin Alcohol', 'Jamón', '¡Gracias!', 'Café con leche']) {
+      assert.equal(plegarAAscii(t).length, t.length, `«${t}» cambió de longitud al plegarse`)
+      assert.ok(!/[^\x00-\x7F]/.test(plegarAAscii(t)), `«${t}» no quedó en ASCII`)
+    }
+    assert.equal(plegarAAscii('Piñacola'), 'Pinacola')
+    assert.equal(plegarAAscii('Jamón'), 'Jamon')
+  })
+
+  await prueba('la comanda siempre dice a dónde va — nunca «?»', () => {
+    assert.equal(etiquetaDestino({}, { table_number: 4 }), 'MESA 4')
+    assert.equal(etiquetaDestino({ table_label: 'Mesa 7' }, {}), 'MESA 7')
+    assert.equal(etiquetaDestino({}, { order_type: 'delivery', order_number: 9 }), 'DELIVERY')
+    assert.equal(etiquetaDestino({}, { order_type: 'takeout', order_number: 9 }), 'PARA LLEVAR')
+    // El caso del papel: venta de mostrador, sin mesa. Antes imprimía «?».
+    assert.equal(etiquetaDestino({}, { order_type: 'pos', order_number: 1078 }), 'POS #1078')
+    assert.equal(etiquetaDestino({}, { id: 'aa3fdbd8' }), 'ORDEN #3FDBD8')
+    assert.equal(etiquetaDestino({}, {}), 'MOSTRADOR')
+    for (const caso of [[{}, {}], [{}, { order_number: 1 }], [null, null]]) {
+      assert.ok(!etiquetaDestino(caso[0], caso[1]).includes('?'), 'volvió el interrogante')
+    }
+  })
+
+  await prueba('el RNC del recibo es el mismo que el de la factura', () => {
+    // En el papel salieron distintos: la factura con `ecf_rnc` (132752155) y el recibo
+    // con `rnc` (656473623). Es el mismo negocio y la misma venta.
+    assert.equal(rncQueEmite({ rnc: '656473623', ecfRnc: '132752155' }), '132752155')
+    assert.equal(rncQueEmite({ rnc: '656473623', ecfRnc: '' }), '656473623')
+    assert.equal(rncQueEmite({ rnc: '656473623' }), '656473623')
+    assert.equal(rncQueEmite({ rnc: '656473623', ecf_rnc: '132752155' }), '132752155')
+    assert.equal(rncQueEmite({}), '')
+    assert.equal(rncQueEmite(null), '')
   })
 
   await prueba('ninguna plantilla térmica fija el ancho a mano', () => {
