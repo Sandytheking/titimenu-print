@@ -120,8 +120,10 @@ function pad(str, len, right = false) {
  * esta rama (la de HTML sí, en `getReceiptStyles`).
  *
  * 48 columnas es fuente A en 80 mm (576 puntos de cabeza / 12 por carácter); 32 lo es en
- * 58 mm (384 / 12). `HALF` es el ancho de cada mitad para los renglones de
- * `renglonImporte(etiqueta, importe, W)`, que es como se alinea a la derecha.
+ * 58 mm (384 / 12). Los renglones de «concepto … importe» los arma `renglonImporte`, que
+ * alinea a la derecha y envuelve; **no se parte el ancho en dos mitades fijas** —ese
+ * patrón (`pad(x, W/2) + pad(y, W/2, true)`) era el que recortaba o desbordaba en cuanto
+ * el texto crecía—.
  *
  * ## Por qué hace falta `explicito` y no basta `paperWidth`
  * El bridge **se autoactualiza solo en Windows**, así que un cambio de ancho le cambia el
