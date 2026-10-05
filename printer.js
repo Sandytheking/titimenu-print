@@ -255,6 +255,12 @@ function respaldoFiscal(data) {
   if (!r) return null
   return {
     negocioNombre: r.negocio_nombre || '',
+    // El comercial va DEBAJO de la razón social y sólo si difiere, igual que en la factura
+    // certificada: el XML trae los dos (RazonSocialEmisor y NombreComercial) y el papel
+    // provisional tiene que parecerse al definitivo.
+    negocioNombreComercial: r.negocio_nombre_comercial || '',
+    // Ya viene RESUELTO por el cliente (`ecf_rnc` y, si es nulo, `rnc`): es el RNC que
+    // EMITE el e-CF, el que va en RNCEmisor del XML y en el QR. El bridge no lo decide.
     negocioRnc: r.negocio_rnc || '',
     negocioDireccion: r.negocio_direccion || '',
     fecha: r.fecha || '',
@@ -1004,8 +1010,12 @@ async function generateFiscalReceiptHTML(data, paperWidth) {
     const bodyRep = `
     <div class="header center">
       <div class="business-name">${F.emisorNombre || (R ? R.negocioNombre : '')}</div>
-      ${F.nombreComercial && F.nombreComercial !== F.emisorNombre
-        ? `<div class="business-details">${F.nombreComercial}</div>` : ''}
+      ${(() => {
+        const razon = F.emisorNombre || (R ? R.negocioNombre : '')
+        const comercial = F.nombreComercial || (R ? R.negocioNombreComercial : '')
+        return comercial && comercial !== razon
+          ? `<div class="business-details">${comercial}</div>` : ''
+      })()}
       ${(F.emisorRnc || (R ? R.negocioRnc : '')) ? `<div class="business-details">RNC: ${F.emisorRnc || R.negocioRnc}</div>` : ''}
       ${(F.emisorDireccion || (R ? R.negocioDireccion : '')) ? `<div class="business-details">${F.emisorDireccion || R.negocioDireccion}</div>` : ''}
       <div class="divider" style="margin: 8px 0 4px;"></div>
@@ -1895,9 +1905,11 @@ async function printFiscalReceipt(data, printerName) {
     const Rh = respaldoFiscal(data)
     printer.alignCenter()
     printer.println(LINE)
-    printer.println(center(F.emisorNombre || (Rh ? Rh.negocioNombre : ''), W))
-    if (F.nombreComercial && F.nombreComercial !== F.emisorNombre) {
-      printer.println(center(F.nombreComercial, W))
+    const razonCab = F.emisorNombre || (Rh ? Rh.negocioNombre : '')
+    printer.println(center(razonCab, W))
+    const comercialCab = F.nombreComercial || (Rh ? Rh.negocioNombreComercial : '')
+    if (comercialCab && comercialCab !== razonCab) {
+      printer.println(center(comercialCab, W))
     }
     const rncCab = F.emisorRnc || (Rh ? Rh.negocioRnc : '')
     const dirCab = F.emisorDireccion || (Rh ? Rh.negocioDireccion : '')

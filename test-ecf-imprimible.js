@@ -40,6 +40,10 @@ function extraer(nombre) {
 }
 // eslint-disable-next-line no-eval
 eval(extraer('fiscalDesdeRepresentacion'))
+// eslint-disable-next-line no-eval
+eval(extraer('respaldoFiscal'))
+// eslint-disable-next-line no-eval
+eval(extraer('formatMoney'))
 
 /** Copiado literal de `select ecf_representacion_impresa('E320000015506')`. */
 const repReal = {
@@ -124,6 +128,66 @@ check('un estado desconocido no bloquea la impresión', () => {
 check('sin representacion no hay nada que imprimir', () => {
   // Cliente anterior a octubre de 2026: el bridge cae a su camino viejo, que no saca QR.
   assert.equal(fiscalDesdeRepresentacion({ ncf: 'B0200000049' }), null)
+})
+
+
+console.log('\n═══ bridge: el papel provisional (respaldo local) ═══')
+
+/** Lo que mandan el web (`payloadFiscal`) y TitiStaff (`bridgeEcfJson`). */
+const payloadConRespaldo = {
+  representacion: {
+    estado: 'certificado', encf: 'E320000015511', tipo_ecf: '32',
+    tipo_nombre: 'Factura de Consumo Electrónica',
+  },
+  respaldo: {
+    negocio_nombre: 'Sandy Burger SRL',
+    negocio_nombre_comercial: 'Sandy Burge',
+    // Ya RESUELTO por el cliente: `ecf_rnc` y, si falta, `rnc`. El de alta de Sandy Burge
+    // es 656473623 y NO es éste — el papel provisional imprimía ése.
+    negocio_rnc: '132752155',
+    negocio_direccion: 'URB. Los maestros Calle #1',
+    fecha: '04-10-2026 07:16',
+    items: [
+      { name: 'Costillitas BBQ', qty: 1, price: 350, subtotal: 350 },
+      { name: 'Pollo BBQ', qty: 2, price: 150, subtotal: 300 },
+    ],
+    envio: 50, descuento: 25, total: 675,
+  },
+}
+
+check('el respaldo normaliza el comercial y el RNC que emite', () => {
+  const R = respaldoFiscal(payloadConRespaldo)
+  assert.equal(R.negocioNombre, 'Sandy Burger SRL')
+  assert.equal(R.negocioNombreComercial, 'Sandy Burge')
+  assert.equal(R.negocioRnc, '132752155')
+  assert.notEqual(R.negocioRnc, '656473623', 'no puede ser el RNC de alta')
+  assert.equal(R.items.length, 2)
+})
+
+check('los importes del respaldo salen con DOS decimales', () => {
+  // `formatMoney` del bridge hace toFixed(2), así que esto fija que se siga usando: la
+  // factura certificada imprime los importes del XML, siempre con dos decimales, y un
+  // `RD$350` al lado de un `RD$350.00` son dos documentos distintos de la misma venta.
+  const R = respaldoFiscal(payloadConRespaldo)
+  assert.equal(formatMoney(R.items[0].subtotal), '350.00')
+  assert.equal(formatMoney(R.items[1].subtotal), '300.00')
+  assert.equal(formatMoney(R.envio), '50.00')
+  assert.equal(formatMoney(R.descuento), '25.00')
+  assert.equal(formatMoney(R.total), '675.00')
+})
+
+check('un envio o descuento en cero no deja linea', () => {
+  // 0 -> null en todo el sistema: un "Envio: RD$0.00" en el papel es ruido.
+  const R = respaldoFiscal({
+    ...payloadConRespaldo,
+    respaldo: { ...payloadConRespaldo.respaldo, envio: 0, descuento: 0 },
+  })
+  assert.equal(R.envio, null)
+  assert.equal(R.descuento, null)
+})
+
+check('sin respaldo no hay papel provisional', () => {
+  assert.equal(respaldoFiscal({ representacion: payloadConRespaldo.representacion }), null)
 })
 
 console.log(`\n${ok} comprobaciones` + (process.exitCode ? ' — CON FALLOS\n' : ' — todas OK\n'))
