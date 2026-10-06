@@ -65,6 +65,27 @@ incluida. El orden completo:
    fallo real. *(Al revés que en TitiPrint, que es privado: allá el 404 anónimo es normal
    y no prueba nada — ya despistó un diagnóstico.)*
 
+### Despliegue ESCALONADO (desde la 2.1.8)
+El bridge **se autoactualiza solo en Windows**, así que publicar es soltarle una versión
+nueva a todos los negocios a la vez. Una regresión en el camino de impresión no se nota en
+una pantalla: se nota en que un restaurante no puede cobrar en plena hora de servicio.
+
+Por eso la versión sale al **20% primero**. `electron-updater` lo soporta con un campo del
+propio feed, así que no hace falta infraestructura:
+
+1. Publicar la release como siempre (pasos 1-3 de arriba).
+2. **Editar `latest.yml` y añadir `stagingPercentage: 20`** (al nivel raíz, junto a
+   `version`), y volver a subirlo con `gh release upload v<X.Y.Z> latest.yml --clobber`.
+   El reparto lo decide un hash del GUID de cada instalación, así que es estable: a un
+   equipo que no le tocó hoy, no le toca mañana — no van rotando.
+3. Verificar los adjuntos sin autenticar, subir `BRIDGE_VERSION` y desplegar el web. Ojo:
+   la página de descargas sirve el instalador **a todo el mundo**; el escalonado sólo
+   afecta a la actualización AUTOMÁTICA.
+4. **A las 48 h**, si no hay problemas, subirlo a todos: quitar `stagingPercentage` (o
+   ponerlo en 100) y volver a subir el `latest.yml` con `--clobber`.
+
+`latest-mac.yml` no lleva escalonado: en Mac no se instala solo, sólo se avisa.
+
 **El paso 3 es obligatorio y es fácil de olvidar** porque el workflow dice `success` y la
 release ya tiene todos los adjuntos: `build.publish.releaseType` es `draft` en el
 `package.json`, así que nace en borrador — y **los adjuntos de un borrador no se descargan
@@ -140,6 +161,28 @@ sin dirección no imprime línea `Dir:`, un delivery imprime la del cliente sin 
 la del local aparece solo en el membrete (línea 3), nunca como dirección de cliente.
 
 `printPOSReceipt` NO copia ese fallback a propósito (ver v1.2.0).
+
+## Ningún camino falla en silencio
+**Si algo cae a una alternativa —QR nativo en vez de raster, papel provisional, el camino
+lento del spooler, un valor por defecto— se REGISTRA con su motivo y se CUENTA.** Degradar
+está bien; degradar callado, no.
+
+Un fallo silencioso no da error, no escribe nada y no pone ningún test en rojo: produce
+**papel que parece correcto con menos dentro**. Por eso en este repositorio todos se
+encontraron igual, careando dos salidas, y ninguno en el código.
+
+El inventario de este arco: el QR que no salía (`raw()` no bufferiza), el código de
+seguridad URL-encoded, la fecha de firma con el día y el mes cambiados, el XML que no se
+encontraba en estado `certificado`, el desglose de impuestos leído de una copia congelada
+del flag, el RNC distinto entre recibo y factura, el nombre del producto recortado, la
+velocidad de impresión que nunca llegó al papel, y las funciones de correo que aceptaban a
+cualquiera. Nueve, y ninguno dio un error.
+
+Regla operativa: cuando escribas un `catch` que sigue adelante, un `|| valorPorDefecto` o
+un camino de respaldo, el **mismo cambio** deja dicho qué se degradó y por qué, donde
+alguien lo vea — en este bridge, el panel «Actividad» vía `sendLog`, no sólo `console.log`,
+que en la app empaquetada no se ve. Y si se puede contar, se cuenta: `imprimirQrTermico`
+devuelve `raster`/`nativo`/`nativo-fallback`/`ninguno` y eso acaba en el registro.
 
 ## LECCIONES DE SANGRE
 1. **`printer.raw()` NO escribe en el buffer — nunca se usa. Para bytes crudos, `append()`.**
