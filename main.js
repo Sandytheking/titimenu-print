@@ -640,7 +640,12 @@ async function onNewOrder(type, order) {
   }
   console.log('[business] currency:', businessInfo.currency)
 
-  const printComandas = async () => {
+  // NO es async a propósito: devuelve el ARRAY de trabajos ya encolados, y quien llama
+  // lo esparce con `...`. Siendo async devolvía una Promesa y `...promesa` revienta con
+  // «Spread syntax requires ...iterable[Symbol.iterator] to be a function» — que es
+  // exactamente lo que salió en pantalla. Dejó de necesitar `await` cuando los trabajos
+  // pasaron a encolarse en vez de esperarse.
+  const printComandas = () => {
     const tableInfo = {
       table_number: order.table_number,
       table_label: order.table_label ?? (

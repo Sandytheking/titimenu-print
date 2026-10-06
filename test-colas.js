@@ -40,3 +40,20 @@ const dormir = (ms) => new Promise(r => setTimeout(r, ms))
 
   console.log('✓ 3 comprobaciones de colas')
 })().catch(e => { console.error('✗', e.message); process.exit(1) })
+
+// ── Guardia estático del orquestador de main.js ──────────────────────────────
+// El bug que lo justifica salió en el papel de Sandy: `printComandas` seguía siendo
+// `async` después de dejar de esperar nada, así que `...printComandas()` esparcía una
+// Promesa y reventaba con «Spread syntax requires ...iterable». Lo peor es que NO se ve
+// en ningún test de impresión: ocurre en la orquestación, no en la plantilla.
+{
+  const fs = require('fs')
+  const main = fs.readFileSync(require('path').join(__dirname, 'main.js'), 'utf8')
+  const esparcidas = [...main.matchAll(/\.\.\.(\w+)\(\)/g)].map(m => m[1])
+  for (const nombre of new Set(esparcidas)) {
+    const decl = new RegExp(`(const|let|var)\\s+${nombre}\\s*=\\s*async\\b|async\\s+function\\s+${nombre}\\b`)
+    assert.ok(!decl.test(main),
+      `«${nombre}» se esparce con ... pero es async: eso esparce una Promesa, no un array`)
+  }
+  console.log(`  ✓ ninguna función esparcida con ... es async (${new Set(esparcidas).size} revisadas)`)
+}
