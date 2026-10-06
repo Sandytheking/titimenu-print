@@ -1,6 +1,6 @@
 {
   "name": "titimenu-print-bridge",
-  "version": "2.1.5",
+  "version": "2.1.6",
   "description": "TitiMenu Desktop — POS e impresión térmica en una sola app",
   "main": "main.js",
   "scripts": {

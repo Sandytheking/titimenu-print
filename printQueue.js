@@ -101,4 +101,38 @@ async function ensureQueueHealthy(printerName, log = () => {}) {
   }
 }
 
-module.exports = { ensureQueueHealthy, MAX_BACKLOG_MS, MAX_PENDING_JOBS }
+/** Cada cuánto se revisa la cola cuando NO hay nada imprimiéndose. */
+const INTERVALO_VIGILANCIA_MS = 60 * 1000
+
+let temporizador = null
+
+/**
+ * Vigila las colas en segundo plano, FUERA del camino de impresión.
+ *
+ * ## Por qué dejó de ir antes de cada trabajo
+ * Medido en Windows: consultar la cola cuesta **~500 ms**, porque lanza su propio
+ * `powershell.exe`. Eran 500 ms pegados a cada ticket para contestar una pregunta que
+ * casi siempre es «la cola está vacía» — el 37% del tiempo total de una impresión.
+ *
+ * La purga sigue existiendo, pero donde no estorba: cada minuto, y además justo después
+ * de un fallo, que es cuando de verdad hay motivo para sospechar de la cola.
+ *
+ * **Nunca purga con un trabajo en curso.** Vaciar la cola mientras algo está saliendo
+ * mataría ese trabajo: por eso el tick se salta si `enCurso()` no es cero, en vez de
+ * intentar coordinarse con él.
+ */
+function vigilarColas({ impresoras, enCurso, log = () => {} }) {
+  if (temporizador) return
+  temporizador = setInterval(async () => {
+    if (enCurso() > 0) return
+    for (const nombre of impresoras()) {
+      if (enCurso() > 0) return        // llegó un trabajo a mitad de la ronda
+      try { await ensureQueueHealthy(nombre, log) } catch {}
+    }
+  }, INTERVALO_VIGILANCIA_MS)
+  if (temporizador.unref) temporizador.unref()
+}
+
+module.exports = {
+  ensureQueueHealthy, vigilarColas, MAX_BACKLOG_MS, MAX_PENDING_JOBS, INTERVALO_VIGILANCIA_MS,
+}

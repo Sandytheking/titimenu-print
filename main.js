@@ -7,6 +7,8 @@ const bridgeAuth = require('./bridgeAuth')
 const { getUSBPrinters, isDrink, printPOSReceipt, printFiscalReceipt, printTableComanda, printDeliveryTicket, printKitchenComanda, printBarComanda, printTestPage, printClosingReport, TEST_PRINTER_NAME } = require('./printer')
 const { setCallbacks, startListening, disconnect } = require('./supabase')
 const { setSalida: setSalidaTiempos } = require('./tiempos')
+const { encolar } = require('./colas')
+const { cerrarHosts } = require('./spoolerWin')
 
 const store = new Store()
 
@@ -653,37 +655,50 @@ async function onNewOrder(type, order) {
       order_id: order.id
     }
 
+    // Devuelve las promesas SIN esperarlas: quien llama las junta con las demás, para
+    // que cocina y barra no se esperen entre sí ni esperen a la caja.
+    const trabajos = []
     if (printerCocina === printerBar) {
       if (isPrinterActive(printerCocina)) {
-        await printTableComanda(order, printerCocina, businessInfo, tableInfo)
+        trabajos.push(encolar(printerCocina,
+          () => printTableComanda(order, printerCocina, businessInfo, tableInfo)))
       }
     } else {
       if (foodItems.length > 0 && isPrinterActive(printerCocina)) {
-        await printKitchenComanda(foodItems, printerCocina, order, businessInfo, tableInfo)
+        trabajos.push(encolar(printerCocina,
+          () => printKitchenComanda(foodItems, printerCocina, order, businessInfo, tableInfo)))
       }
       if (drinkItems.length > 0 && isPrinterActive(printerBar)) {
-        await printBarComanda(drinkItems, printerBar, order, businessInfo, tableInfo)
+        trabajos.push(encolar(printerBar,
+          () => printBarComanda(drinkItems, printerBar, order, businessInfo, tableInfo)))
       }
     }
+    return trabajos
   }
 
   try {
+    // Todos los trabajos se LANZAN a la vez, cada uno a la cola de SU impresora. Los de
+    // la misma impresora salen en orden; los de impresoras distintas, en paralelo.
+    const trabajos = []
     if (type === 'pos') {
       if (isPrinterActive(printerCaja)) {
         // `order` es la fila cruda de pos_orders: cashier_name viene en ella.
-        await printPOSReceipt(order, printerCaja, businessInfo)
+        trabajos.push(encolar(printerCaja, () => printPOSReceipt(order, printerCaja, businessInfo)))
       }
-      // Also separate and print kitchen/bar comandas for POS orders!
-      await printComandas()
+      trabajos.push(...printComandas())
     } else if (type === 'table') {
-      await printComandas()
+      trabajos.push(...printComandas())
     } else if (type === 'delivery') {
       if (isPrinterActive(printerCaja)) {
-        await printDeliveryTicket(order, printerCaja, businessInfo)
+        trabajos.push(encolar(printerCaja, () => printDeliveryTicket(order, printerCaja, businessInfo)))
       }
-      // Also separate and print kitchen/bar comandas for delivery orders!
-      await printComandas()
+      trabajos.push(...printComandas())
     }
+    // `allSettled`: que falle la comanda no puede impedir que salga el recibo, ni al
+    // revés. Se espera a todos y se reporta el primero que haya fallado.
+    const resultados = await Promise.allSettled(trabajos)
+    const fallo = resultados.find(r => r.status === 'rejected')
+    if (fallo) throw fallo.reason
   } catch (err) {
     console.error('Print error:', err.message)
     new Notification({
@@ -812,10 +827,12 @@ async function handlePrintJob(endpoint, data) {
     console.log('[business] currency:', businessInfo.currency)
     // Ruteo por order_type: delivery/takeout usan la plantilla que desglosa
     // Subtotal + Envío + TOTAL; el resto (pos/mesa) sigue con el recibo POS.
+    // Por la MISMA cola que los trabajos de realtime: si no, un recibo por HTTP y una
+    // comanda por realtime podrían escribir a la vez en el mismo rollo e intercalarse.
     if (data.order_type === 'delivery' || data.order_type === 'takeout') {
-      await printDeliveryTicket(order, printerCaja, businessInfo)
+      await encolar(printerCaja, () => printDeliveryTicket(order, printerCaja, businessInfo))
     } else {
-      await printPOSReceipt(order, printerCaja, businessInfo)
+      await encolar(printerCaja, () => printPOSReceipt(order, printerCaja, businessInfo))
     }
     return `Recibo impreso — Orden #${data.order_number}`
   }
@@ -823,7 +840,7 @@ async function handlePrintJob(endpoint, data) {
   if (endpoint === 'print-fiscal') {
     data.currency = data.currency || store.get('businessCurrency', 'RD$')
     console.log('[business] currency:', data.currency)
-    await printFiscalReceipt(data, printerCaja)
+    await encolar(printerCaja, () => printFiscalReceipt(data, printerCaja))
     return `Comprobante fiscal impreso — ${data.ncf || ''}`
   }
 
@@ -1295,6 +1312,7 @@ app.on('window-all-closed', () => {
 // Que no quede proceso zombi: se corta el realtime (websocket que mantendría vivo el
 // bucle de eventos) y se cierra el servidor HTTP antes de salir.
 app.on('before-quit', () => {
+  cerrarHosts()
   destroyPosView()
   disconnect()
   if (httpServer) { httpServer.close(); httpServer = null }

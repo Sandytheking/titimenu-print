@@ -920,6 +920,7 @@
     <div class="log-box">
       <div class="log-header">
         <span class="log-title">Actividad</span>
+        <button class="log-clear" onclick="copiarLog()" id="btnCopiarLog">copiar</button>
         <button class="log-clear" onclick="clearLog()">limpiar</button>
       </div>
       <div class="log-entries" id="logEntries">
@@ -1055,6 +1056,35 @@
       entry.innerHTML = `<span class="log-time">${time}</span><span class="log-msg ${type}">${text}</span>`
       entries.appendChild(entry)
       entries.scrollTop = entries.scrollHeight
+    }
+
+    /**
+     * Copia las últimas 100 líneas al portapapeles.
+     *
+     * El panel no deja copiar cómodamente —hay que arrastrar dentro de un div con
+     * scroll— y las mediciones de impresión hay que poder pegarlas en un reporte. 100
+     * líneas son de sobra para una tanda de pruebas y evitan volcar una sesión entera.
+     */
+    function copiarLog() {
+      const entradas = [...document.querySelectorAll('#logEntries .log-entry')].slice(-100)
+      const texto = entradas.map(e => {
+        const hora = e.querySelector('.log-time')?.textContent || ''
+        const msg = e.querySelector('.log-msg')?.textContent || ''
+        return `${hora}  ${msg}`
+      }).join('\n')
+      const btn = document.getElementById('btnCopiarLog')
+      const avisar = (t) => { if (btn) { btn.textContent = t; setTimeout(() => { btn.textContent = 'copiar' }, 1500) } }
+      navigator.clipboard.writeText(texto).then(
+        () => avisar(`${entradas.length} lineas`),
+        // Sin permiso de portapapeles: se seleccionan para que se copien a mano, en vez
+        // de dejar al usuario sin salida.
+        () => {
+          const r = document.createRange()
+          r.selectNodeContents(document.getElementById('logEntries'))
+          const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r)
+          avisar('selecciona y Ctrl+C')
+        },
+      )
     }
 
     function clearLog() {

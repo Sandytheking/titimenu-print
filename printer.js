@@ -25,11 +25,22 @@ function translatePaymentMethod(raw) {
 const Store = require('electron-store')
 const store = new Store()
 const { BrowserWindow, Notification } = require('electron')
-const { ensureQueueHealthy } = require('./printQueue')
+const { ensureQueueHealthy, vigilarColas } = require('./printQueue')
+const { enviarPorHost } = require('./spoolerWin')
 
 // Descartar trabajos encolados no puede ser silencioso: son ventas ya cobradas cuyo
 // recibo no va a salir nunca. Va al log y a una notificación del sistema, porque quien
 // tiene que enterarse está en la caja, no mirando la consola.
+/**
+ * Impresoras que este equipo ha usado, y trabajos en vuelo.
+ *
+ * La vigilancia de colas necesita saber las dos cosas: a quién mirar, y si puede mirar
+ * ahora mismo sin arriesgarse a purgar un trabajo que está saliendo. Se llenan solas al
+ * imprimir, así que no hay que cablear la configuración hasta aquí.
+ */
+const impresorasVistas = new Set()
+let trabajosEnCurso = 0
+
 function logQueue(message) {
   console.warn(`[printQueue] ${message}`)
   try {
@@ -621,8 +632,43 @@ async function sendRawToPrinter(buffer, printerName, crono) {
   // En Windows esto lanza su PROPIO powershell.exe para consultar la cola, aparte del
   // que hace el envío. Se cronometran por separado justamente para poder repartir la
   // culpa entre los dos.
-  await ensureQueueHealthy(printerName, logQueue)
+  // El tope de cola YA NO va aquí: costaba ~500 ms por ticket en Windows (su propio
+  // powershell.exe) para contestar casi siempre «vacía». Ahora lo vigila `vigilarColas`
+  // cada minuto, y además se comprueba justo después de un fallo. Ver printQueue.js.
+  impresorasVistas.add(printerName)
+  trabajosEnCurso++
+  vigilarColas({
+    impresoras: () => impresorasVistas,
+    enCurso: () => trabajosEnCurso,
+    log: logQueue,
+  })
   if (crono) crono.etapa('cola')
+  try {
+    return await enviarAlSpooler(buffer, printerName)
+  } catch (err) {
+    // Un fallo SÍ es motivo para mirar la cola: puede estar atascada y ser la causa.
+    // Va aquí, fuera del camino feliz, que es justo lo que se quería conseguir.
+    try { await ensureQueueHealthy(printerName, logQueue) } catch {}
+    throw err
+  } finally {
+    trabajosEnCurso--
+  }
+}
+
+/** El envío crudo al spooler del sistema, por plataforma. */
+async function enviarAlSpooler(buffer, printerName) {
+  // Camino RÁPIDO en Windows: el host persistente, que ya tiene el C# compilado. Si por
+  // lo que sea no está disponible, se cae al de siempre PARA ESTE TICKET — un ticket que
+  // no sale es peor que un ticket lento, y así una regresión aquí no deja a nadie sin
+  // papel.
+  if (process.platform === 'win32') {
+    try {
+      await enviarPorHost(buffer, printerName)
+      return
+    } catch (err) {
+      console.warn('[printer] host de impresión no disponible, usando el camino lento:', err.message)
+    }
+  }
   if (process.platform === 'win32') {
     return new Promise((resolve, reject) => {
       const tmp = path.join(os.tmpdir(), `titimenu_${Date.now()}.bin`)
