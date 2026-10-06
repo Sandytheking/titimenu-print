@@ -1,4 +1,5 @@
 const { printer: ThermalPrinter, types: PrinterTypes, BreakLine } = require('node-thermal-printer')
+const { cronometro } = require('./tiempos')
 const { exec, spawn } = require('child_process')
 const { promisify } = require('util')
 const fs = require('fs')
@@ -611,12 +612,17 @@ async function createPrinter(printerName) {
   return instantiate(dummyInterface)
 }
 
-async function sendRawToPrinter(buffer, printerName) {
+async function sendRawToPrinter(buffer, printerName, crono) {
   console.log(`[sendRawToPrinter] Enviando ${buffer.length} bytes a la impresora: ${printerName}`)
   // Tope de la cola del sistema. Va aquí —en el punto donde el trabajo ENTRA al
   // spooler— y no en cada llamador, para que lo respeten los tres caminos por igual:
   // el realtime, el HTTP y el IPC del POS. Ver printQueue.js.
+  //
+  // En Windows esto lanza su PROPIO powershell.exe para consultar la cola, aparte del
+  // que hace el envío. Se cronometran por separado justamente para poder repartir la
+  // culpa entre los dos.
   await ensureQueueHealthy(printerName, logQueue)
+  if (crono) crono.etapa('cola')
   if (process.platform === 'win32') {
     return new Promise((resolve, reject) => {
       const tmp = path.join(os.tmpdir(), `titimenu_${Date.now()}.bin`)
@@ -1434,6 +1440,8 @@ async function printPOSReceipt(order, printerName, businessInfo) {
 
   const printMode = store.get('printMode', 'thermal')
   const paperWidth = store.get('paperWidth', '80mm')
+  const crono = cronometro('pos', order.order_number ? `#${order.order_number}` : '')
+  crono.origen(order.created_at)
 
   if (printMode === 'system') {
     const html = generatePOSReceiptHTML(order, businessInfo, paperWidth)
@@ -1577,6 +1585,7 @@ async function printPOSReceipt(order, printerName, businessInfo) {
   }
 
   const isTCP = printerName && (IP_RE.test(printerName.trim()) || printerName.trim().startsWith('tcp://'))
+  crono.etapa('plantilla')
   const printer = await createPrinter(printerName)
   if (isTCP) {
     const connected = await printer.isPrinterConnected()
@@ -1636,10 +1645,22 @@ async function printPOSReceipt(order, printerName, businessInfo) {
   printer.println(LINE)
   printer.cut()
   if (isTCP) {
-    await printer.execute()
+    crono.etapa('buffer')
+    try {
+      await printer.execute()
+    } finally {
+      crono.etapa('red')
+      crono.fin(`canal=red(${printerName}) intentos=1`)
+    }
   } else {
     const buf = printer.getBuffer()
-    await sendRawToPrinter(buf, printerName)
+    crono.etapa('buffer')
+    try {
+      await sendRawToPrinter(buf, printerName, crono)
+    } finally {
+      crono.etapa('spooler')
+      crono.fin(`canal=local/usb intentos=1`)
+    }
     printer.clear()
   }
 }
@@ -1742,6 +1763,8 @@ async function printTableComanda(order, printerName, businessInfo, tableInfo = {
 
   const printMode = store.get('printMode', 'thermal')
   const paperWidth = store.get('paperWidth', '80mm')
+  const crono = cronometro('comanda-mesa', '')
+  crono.origen(order && order.created_at)
 
   if (printMode === 'system') {
     const html = generateTableComandaHTML(order, businessInfo, paperWidth, tableInfo)
@@ -1782,6 +1805,7 @@ async function printTableComanda(order, printerName, businessInfo, tableInfo = {
   }
 
   const isTCP = printerName && (IP_RE.test(printerName.trim()) || printerName.trim().startsWith('tcp://'))
+  crono.etapa('plantilla')
   const printer = await createPrinter(printerName)
   if (isTCP) {
     const connected = await printer.isPrinterConnected()
@@ -1821,10 +1845,22 @@ async function printTableComanda(order, printerName, businessInfo, tableInfo = {
   printer.println(LINE)
   printer.cut()
   if (isTCP) {
-    await printer.execute()
+    crono.etapa('buffer')
+    try {
+      await printer.execute()
+    } finally {
+      crono.etapa('red')
+      crono.fin(`canal=red(${printerName}) intentos=1`)
+    }
   } else {
     const buf = printer.getBuffer()
-    await sendRawToPrinter(buf, printerName)
+    crono.etapa('buffer')
+    try {
+      await sendRawToPrinter(buf, printerName, crono)
+    } finally {
+      crono.etapa('spooler')
+      crono.fin(`canal=local/usb intentos=1`)
+    }
     printer.clear()
   }
 }
@@ -1837,6 +1873,8 @@ async function printDeliveryTicket(order, printerName, businessInfo) {
 
   const printMode = store.get('printMode', 'thermal')
   const paperWidth = store.get('paperWidth', '80mm')
+  const crono = cronometro('delivery', order.order_number ? `#${order.order_number}` : '')
+  crono.origen(order.created_at)
 
   if (printMode === 'system') {
     const html = generateDeliveryTicketHTML(order, businessInfo, paperWidth)
@@ -1918,6 +1956,7 @@ async function printDeliveryTicket(order, printerName, businessInfo) {
   }
 
   const isTCP = printerName && (IP_RE.test(printerName.trim()) || printerName.trim().startsWith('tcp://'))
+  crono.etapa('plantilla')
   const printer = await createPrinter(printerName)
   if (isTCP) {
     const connected = await printer.isPrinterConnected()
@@ -1965,10 +2004,22 @@ async function printDeliveryTicket(order, printerName, businessInfo) {
   printer.println(LINE)
   printer.cut()
   if (isTCP) {
-    await printer.execute()
+    crono.etapa('buffer')
+    try {
+      await printer.execute()
+    } finally {
+      crono.etapa('red')
+      crono.fin(`canal=red(${printerName}) intentos=1`)
+    }
   } else {
     const buf = printer.getBuffer()
-    await sendRawToPrinter(buf, printerName)
+    crono.etapa('buffer')
+    try {
+      await sendRawToPrinter(buf, printerName, crono)
+    } finally {
+      crono.etapa('spooler')
+      crono.fin(`canal=local/usb intentos=1`)
+    }
     printer.clear()
   }
 }
@@ -2070,6 +2121,8 @@ async function printFiscalReceipt(data, printerName) {
 
   const printMode = store.get('printMode', 'thermal')
   const paperWidth = store.get('paperWidth', '80mm')
+  const crono = cronometro('fiscal', data.ncf || '')
+  crono.origen(data.created_at)
 
   if (printMode === 'system') {
     const html = await generateFiscalReceiptHTML(data, paperWidth)
@@ -2135,6 +2188,7 @@ async function printFiscalReceipt(data, printerName) {
   }
 
   const isTCP = printerName && (IP_RE.test(printerName.trim()) || printerName.trim().startsWith('tcp://'))
+  crono.etapa('plantilla')
   const printer = await createPrinter(printerName)
   if (isTCP) {
     const connected = await printer.isPrinterConnected()
@@ -2242,6 +2296,7 @@ async function printFiscalReceipt(data, printerName) {
       // La URL va tal cual: es la firmada. Raster por defecto; ver `imprimirQrTermico`
       // para por qué esto NO puede volver a ser `printer.raw()`.
       const comoSalio = await imprimirQrTermico(printer, F.rep.qr_url, paperWidth)
+      crono.etapa('qr')
       console.log(`[printer] QR de ${F.encf} impreso por: ${comoSalio}`)
       printer.newLine()
       printer.println('Consulte este comprobante')
@@ -2257,7 +2312,16 @@ async function printFiscalReceipt(data, printerName) {
     printer.cut()
 
     if (isTCP) {
+      crono.etapa('buffer')
+      crono.etapa('buffer')
+    try {
       await printer.execute()
+    } finally {
+      crono.etapa('red')
+      crono.fin(`canal=red(${printerName}) intentos=1`)
+    }
+      crono.etapa('red')
+      crono.fin(`canal=red(${printerName}) intentos=1`)
     } else {
       const buf = printer.getBuffer()
       await sendRawToPrinter(buf, printerName)
@@ -2307,10 +2371,22 @@ async function printFiscalReceipt(data, printerName) {
   printer.println(LINE)
   printer.cut()
   if (isTCP) {
-    await printer.execute()
+    crono.etapa('buffer')
+    try {
+      await printer.execute()
+    } finally {
+      crono.etapa('red')
+      crono.fin(`canal=red(${printerName}) intentos=1`)
+    }
   } else {
     const buf = printer.getBuffer()
-    await sendRawToPrinter(buf, printerName)
+    crono.etapa('buffer')
+    try {
+      await sendRawToPrinter(buf, printerName, crono)
+    } finally {
+      crono.etapa('spooler')
+      crono.fin(`canal=local/usb intentos=1`)
+    }
     printer.clear()
   }
 }
@@ -2323,6 +2399,8 @@ async function printStationComanda(stationTitle, items, printerName, orderInfo, 
 
   const printMode = store.get('printMode', 'thermal')
   const paperWidth = store.get('paperWidth', '80mm')
+  const crono = cronometro('comanda', stationTitle)
+  crono.origen(orderInfo && orderInfo.created_at)
   
   const destino = etiquetaDestino(tableInfo, orderInfo)
   const shortId = (tableInfo?.order_id || orderInfo.id || orderInfo.order_number || '000000').slice(-6).toUpperCase()
@@ -2355,6 +2433,7 @@ async function printStationComanda(stationTitle, items, printerName, orderInfo, 
   }
 
   const isTCP = printerName && (IP_RE.test(printerName.trim()) || printerName.trim().startsWith('tcp://'))
+  crono.etapa('plantilla')
   const printer = await createPrinter(printerName)
   if (isTCP) {
     const connected = await printer.isPrinterConnected()
@@ -2382,10 +2461,22 @@ async function printStationComanda(stationTitle, items, printerName, orderInfo, 
   printer.println(LINE)
   printer.cut()
   if (isTCP) {
-    await printer.execute()
+    crono.etapa('buffer')
+    try {
+      await printer.execute()
+    } finally {
+      crono.etapa('red')
+      crono.fin(`canal=red(${printerName}) intentos=1`)
+    }
   } else {
     const buf = printer.getBuffer()
-    await sendRawToPrinter(buf, printerName)
+    crono.etapa('buffer')
+    try {
+      await sendRawToPrinter(buf, printerName, crono)
+    } finally {
+      crono.etapa('spooler')
+      crono.fin(`canal=local/usb intentos=1`)
+    }
     printer.clear()
   }
 }
