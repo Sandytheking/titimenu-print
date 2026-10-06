@@ -16,6 +16,19 @@
 // "el bridge se entera tarde", que tienen arreglos opuestos (uno es el envío, el otro es
 // sondeo vs realtime).
 
+// A dónde sale la línea, además de la consola.
+//
+// `console.log` NO llega al panel «Actividad» de la app: ese panel sólo muestra lo que
+// pasa por `sendLog()` del proceso principal. Y en la app EMPAQUETADA la consola no se ve
+// —no hay terminal—, así que una medición que sólo fuera por consola sería invisible justo
+// para quien tiene que leerla. `main.js` engancha aquí su `sendLog`.
+let salida = null
+
+/** Engancha el panel de la app. Lo llama `main.js` al arrancar. */
+function setSalida(fn) {
+  salida = typeof fn === 'function' ? fn : null
+}
+
 /** Arranca un cronómetro para un trabajo. */
 function cronometro(tipo, referencia) {
   const t0 = Date.now()
@@ -48,10 +61,12 @@ function cronometro(tipo, referencia) {
       const total = Date.now() - t0
       const partes = etapas.map(([n, ms]) => `${n} ${ms}ms`).join(' | ')
       const ref = referencia ? ` ${referencia}` : ''
-      console.log(`[tiempos] ${tipo}${ref} | ${partes} | TOTAL ${total}ms${extra ? ' | ' + extra : ''}`)
+      const linea = `[tiempos] ${tipo}${ref} | ${partes} | TOTAL ${total}ms${extra ? ' | ' + extra : ''}`
+      console.log(linea)
+      if (salida) { try { salida(linea) } catch {} }
       return total
     },
   }
 }
 
-module.exports = { cronometro }
+module.exports = { cronometro, setSalida }

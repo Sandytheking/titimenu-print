@@ -6,6 +6,7 @@ const Store = require('electron-store')
 const bridgeAuth = require('./bridgeAuth')
 const { getUSBPrinters, isDrink, printPOSReceipt, printFiscalReceipt, printTableComanda, printDeliveryTicket, printKitchenComanda, printBarComanda, printTestPage, printClosingReport, TEST_PRINTER_NAME } = require('./printer')
 const { setCallbacks, startListening, disconnect } = require('./supabase')
+const { setSalida: setSalidaTiempos } = require('./tiempos')
 
 const store = new Store()
 
@@ -493,6 +494,10 @@ function sendLog(text) {
     configWindow.webContents.send('log-message', text)
   }
 }
+
+// Las mediciones de impresión salen por el panel «Actividad», no sólo por consola: en la
+// app empaquetada no hay terminal donde leerlas.
+setSalidaTiempos(sendLog)
 
 function onStatusChange(connected) {
   const wasConnected = isConnected
