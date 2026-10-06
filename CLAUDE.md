@@ -65,9 +65,13 @@ incluida. El orden completo:
    fallo real. *(Al revés que en TitiPrint, que es privado: allá el 404 anónimo es normal
    y no prueba nada — ya despistó un diagnóstico.)*
 
-### Despliegue ESCALONADO (desde la 2.1.8)
+### Despliegue ESCALONADO — cuando haya clientes con PC
 El bridge **se autoactualiza solo en Windows**, así que publicar es soltarle una versión
-nueva a todos los negocios a la vez. Una regresión en el camino de impresión no se nota en
+nueva a todos los negocios a la vez.
+
+**La 2.1.8 salió al 100% a propósito**: en ese momento el único equipo con el bridge
+instalado era el de Sandy. Escalonar protege a terceros, y no había terceros. En cuanto
+haya clientes con PC, esto deja de ser opcional. Una regresión en el camino de impresión no se nota en
 una pantalla: se nota en que un restaurante no puede cobrar en plena hora de servicio.
 
 Por eso la versión sale al **20% primero**. `electron-updater` lo soporta con un campo del
