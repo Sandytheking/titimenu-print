@@ -397,6 +397,29 @@ function openRole(role) {
   wc.on('did-navigate', pushShellState)
   wc.on('did-navigate-in-page', pushShellState)
 
+  // Un fallo de carga NO puede quedarse girando. Antes no había manejador: si la página
+  // no cargaba, el usuario veía «cargando» indefinidamente y no había forma de saber por
+  // qué — ni siquiera si el problema era de red, de certificado o del servidor. Es el
+  // mismo defecto de siempre en este repositorio: degradar en silencio.
+  wc.on('did-fail-load', (_e, codigo, descripcion, url, esPrincipal) => {
+    if (!esPrincipal) return
+    if (codigo === -3) return            // ERR_ABORTED: navegación sustituida, no es fallo
+    const msg = `No se pudo cargar el POS (${codigo} ${descripcion}) — ${url}`
+    console.error('[pos-view]', msg)
+    sendLog(msg)
+    mostrarFalloPos(msg)
+  })
+
+  wc.on('did-finish-load', () => {
+    sendLog(`POS cargado: ${wc.getURL()}`)
+  })
+
+  wc.on('unresponsive', () => {
+    const msg = 'La ventana del POS dejó de responder. Prueba Ventana → Recargar.'
+    console.warn('[pos-view]', msg)
+    sendLog(msg)
+  })
+
   wc.on('render-process-gone', (_e, details) => {
     sendLog(`La pantalla del POS se cerró sola (${details.reason}). Vuelve a abrirla desde Inicio.`)
     goHome()
@@ -465,12 +488,55 @@ function buildAppMenu() {
       submenu: [
         { label: 'Inicio', accelerator: 'Command+Shift+H', click: () => { createShellWindow(); goHome() } },
         { role: 'reload', label: 'Recargar' },
+        { label: 'Cerrar sesión del POS (borrar datos de esta ventana)',
+          click: () => limpiarSesionPos() },
         { type: 'separator' },
         { role: 'minimize', label: 'Minimizar' },
         { role: 'close', label: 'Cerrar' },
       ],
     },
   ]))
+}
+
+/**
+ * Pinta el fallo DENTRO de la vista del POS, con el motivo y un botón de reintentar.
+ *
+ * Se usa `data:` y no un fichero para que no dependa de nada que también pueda fallar.
+ * Sin esto, un fallo de carga es indistinguible de «va lento».
+ */
+function mostrarFalloPos(mensaje) {
+  if (!posView || posView.webContents.isDestroyed()) return
+  const html = `<!doctype html><meta charset="utf-8">
+<body style="margin:0;display:flex;align-items:center;justify-content:center;height:100vh;
+background:#0a0a0a;color:#eee;font:14px system-ui,sans-serif;text-align:center">
+<div style="max-width:30rem;padding:2rem">
+  <div style="font-size:2rem;margin-bottom:.5rem">\u26A0\uFE0F</div>
+  <h1 style="font-size:1.1rem;margin:0 0 .6rem">No se pudo abrir el POS</h1>
+  <p style="color:#aaa;line-height:1.5;margin:0 0 1.2rem">${String(mensaje).replace(/</g, '&lt;')}</p>
+  <p style="color:#777;font-size:12px;line-height:1.5">Prueba <b>Ventana &rarr; Recargar</b>.
+  Si sigue igual, en la configuraci\u00F3n hay <b>Cerrar sesi\u00F3n del POS</b>, que borra los datos
+  guardados de esta ventana y vuelve a pedir el inicio de sesi\u00F3n.</p>
+</div></body>`
+  posView.webContents.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
+}
+
+/**
+ * Borra los datos guardados de las ventanas del POS y vuelve al inicio.
+ *
+ * ## Por qué hacía falta
+ * Cada rol tiene su propia partición (`persist:titimenu-pos` / `-staff`), y si la de uno
+ * queda en mal estado —una sesión a medio escribir, por ejemplo— **no había ninguna
+ * salida**: la ventana se quedaba cargando y ni reinstalar ayudaba, porque los datos
+ * viven en `userData` y el instalador no los toca. Reinstalar no es un plan.
+ */
+async function limpiarSesionPos() {
+  for (const particion of Object.values(POS_PARTITIONS)) {
+    try { await session.fromPartition(particion).clearStorageData() } catch (e) {
+      console.warn('[pos-view] no se pudo limpiar', particion, e.message)
+    }
+  }
+  sendLog('Datos del POS borrados: vuelve a entrar e inicia sesión.')
+  goHome()
 }
 
 function applyPosPermissions(posSession) {
