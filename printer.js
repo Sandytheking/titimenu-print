@@ -386,10 +386,19 @@ function fiscalDesdeRepresentacion(data) {
   // de imprimir facturas válidas en silencio. Eso ya pasó con E320000015506.
   const rechazada = ['rechazado', 'rechazado_esquema', 'requiere_revision', 'anulado']
     .includes(rep.estado)
+  // Papel de CONTINGENCIA (factura emitida sin conexión, o con Digifact lento): el QR de la
+  // URL de contingencia y la leyenda, sin código de seguridad ni fecha de firma, que todavía
+  // no existen. Mismo predicado que `EcfRepresentation.esImprimibleEnContingencia`: solo si
+  // NO hay QR oficial (el certificado manda siempre), hay URL de contingencia y el estado
+  // sigue valiendo. La URL la arma el servidor (`ecf_url_contingencia`): aquí no se toca.
+  const qrContingencia = rep.qr_contingencia ? String(rep.qr_contingencia).trim() : ''
+  const contingencia = !rep.qr_url && !rechazada && !!qrContingencia
   return {
     rep,
     conQr,
     rechazada,
+    contingencia,
+    qrContingencia,
     titulo: rep.tipo_nombre || 'COMPROBANTE FISCAL',
     encf: rep.encf || '',
     emisorNombre: rep.emisor_nombre || rep.nombre_comercial || '',
@@ -452,6 +461,44 @@ function respaldoFiscal(data) {
     descuento: r.descuento != null && r.descuento > 0 ? r.descuento : null,
     total: r.total != null ? r.total : 0,
   }
+}
+
+/** La leyenda debajo del QR de contingencia. Una sola, acordada con Digifact: la misma que
+ *  `LEYENDA_CONTINGENCIA` del módulo compartido. */
+const LEYENDA_CONTINGENCIA = 'Contingencia'
+
+/**
+ * El pie de un comprobante que la DGII todavía no firmó, en la TÉRMICA. Espejo de
+ * `pieSinFirma` de `TicketBuilder.buildEcf` (módulo compartido): o el papel de contingencia
+ * —QR de Digifact + «Contingencia», NADA más— o «Comprobante en proceso de validación».
+ *
+ * ## Sin QR no sale el papel de contingencia
+ * Ese papel solo sirve por su QR: es lo único con lo que el cliente consulta su factura. Si
+ * no se pudo poner (`imprimirQrTermico` → 'ninguno') se LANZA antes de mandar el buffer, en
+ * vez de entregar un papel que dice «Contingencia» sin nada que escanear. Quien imprime lo
+ * ve como fallo de impresión y reimprime el mismo número.
+ */
+async function pieSinFirmaTermico(printer, F, paperWidth) {
+  if (F.contingencia) {
+    printer.newLine()
+    // La URL va tal cual llegó del servidor. `imprimirQrTermico` usa append, nunca raw().
+    const comoSalio = await imprimirQrTermico(printer, F.qrContingencia, paperWidth)
+    console.log(`[printer] QR de CONTINGENCIA de ${F.encf} impreso por: ${comoSalio}`)
+    if (comoSalio === 'ninguno') {
+      throw new Error(`No se pudo poner el QR de contingencia de ${F.encf}: el papel NO se imprimió ` +
+        '(sin el QR el cliente no puede consultar su factura). Revisa la impresora y reimprime.')
+    }
+    printer.newLine()
+    printer.bold(true)
+    printer.println(LEYENDA_CONTINGENCIA)
+    printer.bold(false)
+    return comoSalio
+  }
+  printer.bold(true)
+  printer.println('Comprobante en proceso')
+  printer.println('de validacion ante la DGII')
+  printer.bold(false)
+  return null
 }
 
 function taxBreakdownLines(order, businessInfo, currency, total, W = 32) {
@@ -1290,6 +1337,18 @@ async function generateFiscalReceiptHTML(data, paperWidth) {
       }
     }
 
+    // Papel de contingencia: el QR de Digifact. Sin él NO se imprime (ver `pieSinFirmaTermico`).
+    let qrContImg = ''
+    if (F.contingencia) {
+      try {
+        const QRCode = require('qrcode')
+        const url = await QRCode.toDataURL(F.qrContingencia, { margin: 1, errorCorrectionLevel: 'M', width: 150 })
+        qrContImg = `<img src="${url}" style="width:150px;height:150px;" alt="QR contingencia">`
+      } catch (e) {
+        throw new Error(`No se pudo generar el QR de contingencia de ${F.encf}: el papel NO se imprimió (${e.message})`)
+      }
+    }
+
     const R = respaldoFiscal(data)
     // Sin XML todavía: el cuerpo se arma con los datos de la venta. Ver `respaldoFiscal`.
     const soloRespaldo = F.lineas.length === 0 && !F.total && !!R
@@ -1350,6 +1409,9 @@ async function generateFiscalReceiptHTML(data, paperWidth) {
         <div class="business-details">Fecha de firma: ${F.rep.fecha_firma}</div>
         <div style="margin:8px 0;">${qrImg}</div>
         <div class="business-details">Consulte este comprobante en la<br>DGII escaneando el código QR</div>
+      ` : F.contingencia ? `
+        <div style="margin:8px 0;">${qrContImg}</div>
+        <div class="bold">${LEYENDA_CONTINGENCIA}</div>
       ` : `
         <div class="bold">Comprobante en proceso de<br>validación ante la DGII</div>
       `}
@@ -2298,10 +2360,7 @@ async function printFiscalReceipt(data, printerName) {
       renglonImporte('TOTAL:', `${cur}${formatMoney(R.total)}`, W).forEach(l => printer.println(l))
       printer.println(LINE)
       printer.alignCenter()
-      printer.bold(true)
-      printer.println('Comprobante en proceso')
-      printer.println('de validacion ante la DGII')
-      printer.bold(false)
+      await pieSinFirmaTermico(printer, F, paperWidth)
       printer.println('¡Gracias por su visita!')
       printer.println(LINE)
       printer.cut()
@@ -2348,10 +2407,7 @@ async function printFiscalReceipt(data, printerName) {
       printer.println('Consulte este comprobante')
       printer.println('en la DGII escaneando el QR')
     } else {
-      printer.bold(true)
-      printer.println('Comprobante en proceso')
-      printer.println('de validacion ante la DGII')
-      printer.bold(false)
+      await pieSinFirmaTermico(printer, F, paperWidth)
     }
     printer.println('¡Gracias por su visita!')
     printer.println(LINE)

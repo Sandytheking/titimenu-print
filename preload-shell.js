@@ -12,6 +12,8 @@ contextBridge.exposeInMainWorld('shell', {
   /** 'owner' | 'staff' | 'printer' */
   open: (target) => ipcRenderer.invoke('shell:open', target),
   goHome: () => ipcRenderer.invoke('shell:home'),
+  /** Cambia el POS en línea por la caja sin conexión (la barra lo ofrece sin red). */
+  sinConexion: () => ipcRenderer.invoke('shell:sin-conexion'),
   getState: () => ipcRenderer.invoke('shell:state'),
   onState: (cb) => ipcRenderer.on('shell:state-changed', (_e, state) => cb(state)),
 })

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, BrowserView, Menu, ipcMain, Notification, dialog, shell, session } = require('electron')
+const { app, BrowserWindow, BrowserView, Menu, ipcMain, Notification, dialog, shell, session, net } = require('electron')
 const { autoUpdater } = require('electron-updater')
 const path = require('path')
 const http = require('http')
@@ -9,6 +9,10 @@ const { setCallbacks, startListening, disconnect } = require('./supabase')
 const { setSalida: setSalidaTiempos } = require('./tiempos')
 const { encolar } = require('./colas')
 const { cerrarHosts } = require('./spoolerWin')
+const { CajaAlmacen, CajaDanada, ColaLlena } = require('./cajaAlmacen')
+const RC = require('./cajaReglas')
+const { reciboSinConexion, facturaContingencia } = require('./cajaPapel')
+const { Conexion } = require('./cajaConexion')
 
 const store = new Store()
 
@@ -213,6 +217,15 @@ let shellWindow = null
 let posView = null
 /** null | 'owner' | 'staff' — qué hay montado AHORA, no una preferencia recordada. */
 let embeddedRole = null
+/**
+ * null | 'web' | 'offline' — QUÉ pantalla está montada para ese rol: el POS web de siempre o la
+ * caja sin conexión empaquetada en la app (`renderer/caja.html`). Ver «Caja sin conexión».
+ */
+let modoVista = null
+/** Almacén de la caja sin conexión (cola, e-NCF apartados, foto). Se crea con la app lista. */
+let caja = null
+/** ¿Hay conexión de verdad? Sonda contra Supabase (`cajaConexion.js`). */
+let conexion = null
 
 /** ¿La URL pertenece al POS? Misma lista de orígenes que valida el IPC (pieza 2). */
 function isTrustedPosUrl(url) {
@@ -251,7 +264,13 @@ function shellState() {
     hasStaffUrl: !!staffUrl(),
     connected: isConnected,
     embedded: embeddedRole,
-    origin: posView && !posView.webContents.isDestroyed() ? originOf(posView.webContents.getURL()) : '',
+    modo: modoVista,
+    // La caja sin conexión es contenido local: no hay dominio que enseñar.
+    origin: modoVista === 'offline' ? 'caja sin conexión'
+      : posView && !posView.webContents.isDestroyed() ? originOf(posView.webContents.getURL()) : '',
+    enLinea: conexion ? conexion.estado.enLinea : true,
+    // ¿Se puede ofrecer «Cobrar sin conexión» a este rol? Hace falta la foto de la caja.
+    hayFoto: embeddedRole ? hayFotoDe(embeddedRole) : false,
   }
 }
 
@@ -312,6 +331,7 @@ function destroyPosView() {
     posView.webContents.destroy()
   } catch {}
   posView = null
+  modoVista = null
 }
 
 /** Vuelve a la pantalla de inicio. Sin esto, elegir un rol era un callejón sin salida. */
@@ -326,12 +346,19 @@ function goHome() {
  * distintas —dueño y empleado— porque son dos sesiones de Supabase en el mismo dominio
  * que si no se pisarían.
  */
-function openRole(role) {
+function openRole(role, { forzarWeb = false } = {}) {
   if (role !== 'owner' && role !== 'staff') return
   const url = role === 'staff' ? staffUrl() : POS_URL
   // Sin slug no hay ruta de personal. La pantalla de inicio ya lo dice y deja el botón
   // desactivado; esto es el cinturón.
   if (!url) { pushShellState(); return }
+
+  // Sin conexión y con la caja guardada: directo a la caja sin conexión, sin pasar por una
+  // carga que va a fallar. La sonda solo ELIGE la pantalla: «Intentar en línea» fuerza el web.
+  if (!forzarWeb && conexion && !conexion.estado.enLinea && hayFotoDe(role)) {
+    abrirCajaSinConexion(role, 'no hay conexión')
+    return
+  }
 
   createShellWindow()
   destroyPosView()
@@ -351,6 +378,7 @@ function openRole(role) {
 
   shellWindow.setBrowserView(posView)
   embeddedRole = role
+  modoVista = 'web'
   layoutPosView()
 
   const wc = posView.webContents
@@ -379,18 +407,7 @@ function openRole(role) {
   // el proceso principal y no dependen de que el armazón haya pintado nada.
   //   Cmd/Ctrl + ,        → impresoras y configuración
   //   Cmd/Ctrl + Shift+H  → volver a la pantalla de inicio
-  wc.on('before-input-event', (event, input) => {
-    if (input.type !== 'keyDown') return
-    const modifier = process.platform === 'darwin' ? input.meta : input.control
-    if (!modifier) return
-    if (input.key === ',') {
-      event.preventDefault()
-      createConfigWindow()
-    } else if (input.shift && (input.key === 'H' || input.key === 'h')) {
-      event.preventDefault()
-      goHome()
-    }
-  })
+  atajosDelMarco(wc)
 
   // El DOMINIO en la barra: si la sesión caduca, Next redirige a /login aquí dentro, y
   // una caja de contraseña sin procedencia visible se ve igual que un phishing.
@@ -407,6 +424,18 @@ function openRole(role) {
     const msg = `No se pudo cargar el POS (${codigo} ${descripcion}) — ${url}`
     console.error('[pos-view]', msg)
     sendLog(msg)
+    // Un fallo de RED con la caja guardada no es un callejón sin salida: se cobra sin
+    // conexión. Cualquier otro fallo (certificado, servidor) se enseña como siempre.
+    if (ERRORES_DE_RED.has(codigo)) {
+      if (conexion) conexion.probarAhora().catch(() => {})
+      if (hayFotoDe(role)) {
+        abrirCajaSinConexion(role, `no cargó el POS en línea (${descripcion})`)
+        return
+      }
+      mostrarFalloPos(`${msg}\n\nSin internet. Esta computadora todavía no tiene guardados los datos de la caja: ` +
+        'hay que abrir el POS una vez con conexión para poder cobrar sin ella.')
+      return
+    }
     mostrarFalloPos(msg)
   })
 
@@ -429,6 +458,21 @@ function openRole(role) {
   pushShellState()
 }
 
+function atajosDelMarco(wc) {
+  wc.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown') return
+    const modifier = process.platform === 'darwin' ? input.meta : input.control
+    if (!modifier) return
+    if (input.key === ',') {
+      event.preventDefault()
+      createConfigWindow()
+    } else if (input.shift && (input.key === 'H' || input.key === 'h')) {
+      event.preventDefault()
+      goHome()
+    }
+  })
+}
+
 /**
  * Permisos del navegador dentro de la ventana del POS. Por defecto NO se concede
  * nada: sólo notificaciones, y sólo a titimenu.com. Las denegaciones se registran a
@@ -439,6 +483,7 @@ function configurePosSession() {
   // una por sesión que puedan discrepar.
   for (const partition of Object.values(POS_PARTITIONS)) {
     applyPosPermissions(session.fromPartition(partition))
+    vigilarFallosDeRed(session.fromPartition(partition))
   }
 }
 
@@ -537,6 +582,20 @@ async function limpiarSesionPos() {
   }
   sendLog('Datos del POS borrados: vuelve a entrar e inicia sesión.')
   goHome()
+}
+
+/** Los mismos fallos de red que `ERRORES_DE_RED`, por su nombre (así los da `webRequest`). */
+const NOMBRES_ERROR_RED = /net::ERR_(INTERNET_DISCONNECTED|NAME_NOT_RESOLVED|NAME_RESOLUTION_FAILED|CONNECTION_(TIMED_OUT|REFUSED|RESET|CLOSED|FAILED)|ADDRESS_UNREACHABLE|NETWORK_CHANGED|TIMED_OUT|PROXY_CONNECTION_FAILED)/
+
+/**
+ * Una petición REAL del POS (a Supabase o a titimenu.com) que falla por red adelanta la sonda
+ * de conexión: así la barra ofrece «Cobrar sin conexión» en segundos y no a los 2 minutos.
+ * Solo es una pista: quien decide sigue siendo la sonda.
+ */
+function vigilarFallosDeRed(posSession) {
+  posSession.webRequest.onErrorOccurred({ urls: ['https://*/*', 'wss://*/*'] }, (details) => {
+    if (conexion && NOMBRES_ERROR_RED.test(details.error || '')) conexion.pistaDeRed(details.error)
+  })
 }
 
 function applyPosPermissions(posSession) {
@@ -1303,6 +1362,353 @@ ipcMain.handle('pos:print-job', async (event, args) => {
   }
 })
 
+// ─── Caja sin conexión ────────────────────────────────────────────────────────
+//
+// Cuando no hay internet, la app no puede cargar el POS web (se renderiza en el servidor de
+// titimenu.com y lo protege una sesión que no se puede renovar sin red). En vez de quedarse en
+// «No se pudo abrir el POS», monta una CAJA LOCAL empaquetada en la app —`renderer/caja.html`,
+// con su propio preload, `preload-caja.js`— que cobra con la FOTO de la caja que el POS web dejó
+// guardada la última vez que abrió con conexión.
+//
+// El reparto del trabajo, y por qué:
+//   · La caja local SOLO lee la foto y escribe en la cola (`cajaAlmacen.js`). No habla con
+//     Supabase y no tiene sesión: sin red no la necesita, y así un token vencido no puede
+//     sacar al cajero de la caja ni mandarlo al login.
+//   · El POS WEB, cuando vuelve a cargar con conexión, guarda la foto, aparta los e-NCF y SUBE
+//     la cola con SU sesión (`src/lib/cajaSinConexion.ts` en menuqr). Quien tiene la sesión es
+//     quien la renueva: si la app guardara una copia del token y lo renovara por su cuenta,
+//     rotaría el refresh token del web y lo dejaría deslogueado. Y si la sesión fue revocada,
+//     el web pide entrar de nuevo y la cola sigue aquí, intacta.
+//   · Las reglas (quién cobra, cuántas, los e-NCF) son las de TitiStaff: `cajaReglas.js`.
+
+/** Errores de Chromium que son «no hay red», no «el servidor falló». */
+const ERRORES_DE_RED = new Set([
+  -7,    // TIMED_OUT
+  -21,   // NETWORK_CHANGED
+  -100,  // CONNECTION_CLOSED
+  -101,  // CONNECTION_RESET
+  -102,  // CONNECTION_REFUSED
+  -104,  // CONNECTION_FAILED
+  -105,  // NAME_NOT_RESOLVED
+  -106,  // INTERNET_DISCONNECTED
+  -109,  // ADDRESS_UNREACHABLE
+  -118,  // CONNECTION_TIMED_OUT
+  -130,  // PROXY_CONNECTION_FAILED
+  -137,  // NAME_RESOLUTION_FAILED
+])
+
+function hayFotoDe(rol) {
+  try { return !!(caja && caja.leerFoto(rol)) } catch { return false }
+}
+
+/** ¿Hay impresora de caja? Sin ella, la factura sin conexión no se emite (no hay QR). */
+function hayImpresoraCaja() {
+  try { return isPrinterActive(cashierPrinterName()) } catch { return false }
+}
+
+function abrirCajaSinConexion(role, motivo) {
+  if (role !== 'owner' && role !== 'staff') return
+  createShellWindow()
+  destroyPosView()
+
+  posView = new BrowserView({
+    webPreferences: {
+      // Contenido LOCAL, nuestro: puede tener su propio preload (cobrar, imprimir, leer la
+      // foto). NUNCA el del POS remoto ni el de la configuración.
+      preload: path.join(__dirname, 'preload-caja.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      webviewTag: false,
+      // Partición propia y sin `persist:`: esta página no guarda nada en el navegador. Lo
+      // que importa (la cola) vive en `caja.json`, que sobrevive a todo.
+      partition: 'caja-sin-conexion',
+    },
+  })
+  shellWindow.setBrowserView(posView)
+  embeddedRole = role
+  modoVista = 'offline'
+  layoutPosView()
+
+  const wc = posView.webContents
+  // Es una página local de un solo archivo: no navega a ninguna parte.
+  wc.on('will-navigate', (event, target) => {
+    event.preventDefault()
+    console.warn(`[caja-offline] navegación bloqueada a ${target}`)
+  })
+  wc.setWindowOpenHandler(() => ({ action: 'deny' }))
+  atajosDelMarco(wc)
+  wc.on('render-process-gone', (_e, details) => {
+    sendLog(`La caja sin conexión se cerró sola (${details.reason}). Las ventas guardadas siguen en el equipo.`)
+    goHome()
+  })
+  wc.loadFile(path.join(__dirname, 'renderer', 'caja.html'), { query: { rol: role } })
+  sendLog(`Caja sin conexión abierta (${role === 'owner' ? 'dueño' : 'empleado'}): ${motivo}`)
+  pushShellState()
+}
+
+function avisarConexion() {
+  pushShellState()
+  if (modoVista === 'offline' && posView && !posView.webContents.isDestroyed()) {
+    posView.webContents.send('caja:conexion', conexion.estado)
+  }
+}
+
+/** ¿La llamada viene de la caja sin conexión que está montada ahora? */
+function esCajaLocal(event) {
+  const ok = modoVista === 'offline' && posView && !posView.webContents.isDestroyed() && event.sender === posView.webContents
+  if (!ok) console.warn('[caja-offline] llamada RECHAZADA: no viene de la caja sin conexión montada')
+  return ok
+}
+
+/** El estado completo que pinta la caja local. */
+function estadoCaja() {
+  const foto = embeddedRole ? caja.leerFoto(embeddedRole) : null
+  const negocioId = foto ? foto.negocioId : null
+  const ahora = Date.now()
+  let resumen = null, disponibles = null, error = null
+  try {
+    if (negocioId) {
+      resumen = caja.resumen(negocioId)
+      disponibles = caja.disponibles(negocioId)
+    }
+  } catch (e) {
+    error = e instanceof CajaDanada ? e.message : `No se pudo leer la cola: ${e.message}`
+  }
+  const e = conexion ? conexion.estado : { enLinea: true, desdeMs: ahora }
+  return {
+    rol: embeddedRole,
+    foto,
+    conexion: e,
+    franja: RC.textoFranja(e.enLinea, e.desdeMs, foto ? foto.tomadaEn : null, ahora),
+    resumen,
+    disponibles,
+    impresoraCaja: hayImpresoraCaja(),
+    error,
+    ahora,
+  }
+}
+
+ipcMain.handle('caja:estado', (event) => {
+  if (!esCajaLocal(event)) return null
+  return estadoCaja()
+})
+
+ipcMain.handle('caja:ventas', (event) => {
+  if (!esCajaLocal(event)) return []
+  const foto = caja.leerFoto(embeddedRole)
+  if (!foto) return []
+  try {
+    return caja.ventas(foto.negocioId).sort((a, b) => b.vendidoEn - a.vendidoEn)
+  } catch (e) {
+    return []
+  }
+})
+
+/**
+ * Cobrar sin conexión. La venta llega ARMADA por la caja local (mismo paquete que el INSERT
+ * del POS web) y aquí se comprueban las reglas que no dependen de la pantalla. Se guarda en la
+ * cola ANTES de que exista nada que imprimir.
+ */
+ipcMain.handle('caja:cobrar', (event, venta) => {
+  if (!esCajaLocal(event)) return { ok: false, error: 'origen no autorizado' }
+  const foto = caja.leerFoto(embeddedRole)
+  if (!foto) return { ok: false, error: 'No hay datos guardados de la caja en esta computadora.' }
+  const p = venta && venta.payload
+  if (!p || typeof p !== 'object') return { ok: false, error: 'venta inválida' }
+  const motivo = RC.motivoNoCobrarSinConexion(
+    RC.rolCobraSinConexion(foto.usuario && foto.usuario.rol), !!foto.sesion, p.payment_method)
+  if (motivo) return { ok: false, error: motivo }
+  // El paquete tiene que ser de ESTE negocio y de ESTA caja: los que dice la foto.
+  if (p.business_id !== foto.negocioId || p.session_id !== foto.sesion.id) {
+    return { ok: false, error: 'La venta no corresponde a la caja guardada.' }
+  }
+  try {
+    const v = caja.encolar({
+      negocioId: foto.negocioId, sesionId: foto.sesion.id, payload: p,
+      total: Number(p.total), metodoPago: p.payment_method,
+    })
+    return { ok: true, venta: v }
+  } catch (e) {
+    if (e instanceof ColaLlena || e instanceof CajaDanada) return { ok: false, error: e.message }
+    console.error('[caja-offline] no se pudo guardar la venta:', e)
+    sendLog(`Caja sin conexión: NO se pudo guardar la venta (${e.message}). No se cobró.`)
+    return { ok: false, error: `No se pudo guardar la venta en esta computadora: ${e.message}. NO se cobró.` }
+  }
+})
+
+ipcMain.handle('caja:imprimir-recibo', async (event, uuid) => {
+  if (!esCajaLocal(event)) return { ok: false, error: 'origen no autorizado' }
+  const foto = caja.leerFoto(embeddedRole)
+  const v = caja.venta(uuid)
+  if (!foto || !v) return { ok: false, error: 'No se encontró la venta.' }
+  try {
+    const summary = await handlePrintJob('print-receipt', reciboSinConexion(v, foto.config))
+    sendLog(`Caja sin conexión: ${summary} (${RC.etiquetaProvisional(v.numeroProvisional)})`)
+    return { ok: true }
+  } catch (e) {
+    sendLog(`Caja sin conexión: el recibo ${RC.etiquetaProvisional(v.numeroProvisional)} no se imprimió: ${e.message}`)
+    return { ok: false, error: e.message }
+  }
+})
+
+async function imprimirContingencia(v, foto, vence) {
+  const summary = await handlePrintJob('print-fiscal', facturaContingencia(v, foto.config, vence))
+  sendLog(`Caja sin conexión: ${summary} — papel de CONTINGENCIA (${RC.etiquetaProvisional(v.numeroProvisional)})`)
+}
+
+/**
+ * Factura fiscal sin conexión. Mismo orden que TitiStaff: interruptor del negocio → hay papel
+ * con QR → se toma el número (USADO en disco) → recién entonces se imprime.
+ */
+ipcMain.handle('caja:factura', async (event, args) => {
+  if (!esCajaLocal(event)) return { ok: false, error: 'origen no autorizado' }
+  const foto = caja.leerFoto(embeddedRole)
+  if (!foto) return { ok: false, error: 'No hay datos guardados de la caja.' }
+  if (!foto.offlineDiferido) return { ok: false, error: 'Sin conexión no se puede emitir factura fiscal en este negocio.' }
+  const sinPapel = RC.motivoSinImpresoraContingencia(hayImpresoraCaja())
+  if (sinPapel) {
+    sendLog('Caja sin conexión: factura bloqueada — no hay impresora de caja para el papel de contingencia')
+    return { ok: false, error: sinPapel }
+  }
+  const { uuid, ncfType, rnc, nombre } = args || {}
+  let r
+  try {
+    r = caja.tomarContingencia(foto.negocioId, uuid, ncfType, rnc, nombre)
+  } catch (e) {
+    return { ok: false, error: `No se pudo preparar la factura sin conexión: ${e.message}. La venta está cobrada y guardada.` }
+  }
+  if (r.tipo === 'no_disponible') return { ok: false, error: `${r.motivo} La venta está cobrada y guardada: puedes entregar el recibo sin factura fiscal.` }
+  if (r.tipo === 'invalida') return { ok: false, error: r.motivo }
+  // El número ya está USADO en disco: si la impresión falla, se reimprime el MISMO.
+  try {
+    await imprimirContingencia(caja.venta(uuid), foto, r.vence)
+    return { ok: true, encf: r.encf }
+  } catch (e) {
+    sendLog(`Caja sin conexión: la factura ${r.encf} NO se imprimió: ${e.message}`)
+    return { ok: false, encf: r.encf, reimprimir: true,
+      error: `La factura ${r.encf} quedó reservada para esta venta pero el papel no salió: ${e.message}. Usa «Reimprimir factura».` }
+  }
+})
+
+ipcMain.handle('caja:reimprimir-factura', async (event, uuid) => {
+  if (!esCajaLocal(event)) return { ok: false, error: 'origen no autorizado' }
+  const foto = caja.leerFoto(embeddedRole)
+  const v = caja.venta(uuid)
+  if (!foto || !v || !v.fiscalEncf || !v.fiscalQr) return { ok: false, error: 'Esta venta no tiene factura de contingencia.' }
+  const a = caja.apartados(foto.negocioId).find(x => x.encf === v.fiscalEncf)
+  try {
+    await imprimirContingencia(v, foto, a ? a.vence : null)
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: e.message }
+  }
+})
+
+ipcMain.handle('caja:devolver-a-cola', (event, uuid) => {
+  if (!esCajaLocal(event)) return null
+  return caja.devolverACola(uuid)
+})
+
+/** «Intentar en línea»: vuelve al POS web aunque la sonda diga que no hay conexión. */
+ipcMain.handle('caja:en-linea', (event) => {
+  if (!esCajaLocal(event)) return
+  if (conexion) conexion.probarAhora().catch(() => {})
+  openRole(embeddedRole, { forzarWeb: true })
+})
+
+ipcMain.handle('caja:probar-conexion', async (event) => {
+  if (!esCajaLocal(event)) return null
+  return conexion ? conexion.probarAhora() : null
+})
+
+// ── Lo que el POS WEB le pide a la app (canales `pos:caja-*`) ──
+// Mismo filtro de origen que la impresión (`isTrustedPosSender`). Ver la cabecera de
+// `preload-pos.js` para por qué esta superficie existe y qué NO expone.
+
+/** La foto la manda el web con conexión; se guarda por ROL (cada partición, su sesión). */
+ipcMain.handle('pos:caja-guardar-foto', (event, foto) => {
+  if (!isTrustedPosSender(event)) return { ok: false }
+  if (embeddedRole !== 'owner' && embeddedRole !== 'staff') return { ok: false }
+  if (!foto || typeof foto.negocioId !== 'string' || !Array.isArray(foto.catalogo) || !foto.config) {
+    console.warn('[caja-offline] foto RECHAZADA: forma inválida')
+    return { ok: false, error: 'foto inválida' }
+  }
+  try {
+    caja.guardarFoto(embeddedRole, { ...foto, tomadaEn: Date.now() })
+    pushShellState()
+    return { ok: true }
+  } catch (e) {
+    // El cobro con conexión no depende de esto: se registra y se sigue. Lo que se pierde es
+    // poder abrir sin conexión con datos recientes.
+    sendLog(`No se pudo guardar la foto de la caja para trabajar sin conexión: ${e.message}`)
+    return { ok: false, error: e.message }
+  }
+})
+
+ipcMain.handle('pos:caja-device-id', (event) => {
+  if (!isTrustedPosSender(event)) return null
+  return caja.deviceId()
+})
+
+ipcMain.handle('pos:caja-aplicar-apartar', (event, { negocioId, resp } = {}) => {
+  if (!isTrustedPosSender(event)) return null
+  if (typeof negocioId !== 'string' || !resp || typeof resp !== 'object') return null
+  const f = caja.aplicarApartar(negocioId, resp)
+  return { insertados: f.insertar.length, borrados: f.borrar.length, disponibles: caja.disponibles(negocioId) }
+})
+
+/** Lo que hay que subir, en orden, con el paquete EXACTO (y su factura, si la tiene). */
+ipcMain.handle('pos:caja-pendientes', (event, negocioId) => {
+  if (!isTrustedPosSender(event)) return []
+  return caja.pendientesEnOrden(negocioId).map(v => ({
+    clientUuid: v.clientUuid,
+    provisional: RC.etiquetaProvisional(v.numeroProvisional),
+    payload: RC.payloadConFactura(v),
+    conFactura: v.fiscalEstado === RC.EstadoFiscal.CONTINGENCIA,
+  }))
+})
+
+ipcMain.handle('pos:caja-marcar-subida', (event, { uuid, resp } = {}) => {
+  if (!isTrustedPosSender(event)) return null
+  return caja.marcarSubida(uuid, resp)
+})
+
+ipcMain.handle('pos:caja-marcar-problema', (event, { uuid, motivo } = {}) => {
+  if (!isTrustedPosSender(event)) return null
+  return caja.marcarProblema(uuid, String(motivo || 'El servidor rechazó la venta'))
+})
+
+ipcMain.handle('pos:caja-intento-fallido', (event, { uuid, motivo } = {}) => {
+  if (!isTrustedPosSender(event)) return null
+  return caja.registrarIntentoFallido(uuid, String(motivo || ''))
+})
+
+ipcMain.handle('pos:caja-resumen', (event, negocioId) => {
+  if (!isTrustedPosSender(event)) return null
+  try { return caja.resumen(negocioId) } catch (e) { return { error: e.message } }
+})
+
+ipcMain.handle('pos:caja-ventas', (event, negocioId) => {
+  if (!isTrustedPosSender(event)) return []
+  try { return caja.ventas(negocioId).sort((a, b) => b.vendidoEn - a.vendidoEn) } catch { return [] }
+})
+
+ipcMain.handle('pos:caja-devolver-a-cola', (event, uuid) => {
+  if (!isTrustedPosSender(event)) return null
+  return caja.devolverACola(uuid)
+})
+
+ipcMain.handle('pos:caja-podar', (event) => {
+  if (!isTrustedPosSender(event)) return 0
+  try { return caja.podarSubidas() } catch { return 0 }
+})
+
+/** El armazón ofrece «Cobrar sin conexión» cuando la sonda dice que se cayó la red. */
+ipcMain.handle('shell:sin-conexion', () => {
+  if (embeddedRole && hayFotoDe(embeddedRole)) abrirCajaSinConexion(embeddedRole, 'lo pidió el cajero desde la barra')
+})
+
 // ─── App Lifecycle ────────────────────────────────────────────────────────────
 
 // UNA sola instancia. Antes no había cerrojo: abrir la app dos veces levantaba dos
@@ -1328,6 +1734,18 @@ app.whenReady().then(async () => {
 
   configurePosSession()
   buildAppMenu()
+
+  // Caja sin conexión: el almacén y la sonda, antes de abrir ninguna ventana (la pantalla de
+  // inicio ya pregunta por la foto y por la conexión).
+  caja = new CajaAlmacen(path.join(app.getPath('userData'), 'caja-sin-conexion'), { log: sendLog })
+  conexion = new Conexion({
+    url: 'https://rurxexgoamhhgwhvzpgn.supabase.co',
+    anonKey: require('./supabase').ANON_KEY,
+    sistemaTieneRed: () => net.isOnline(),
+    log: sendLog,
+    alCambiar: avisarConexion,
+  })
+  conexion.iniciar()
 
   // Credencial del EQUIPO (Opción B). init antes de cualquier canje: necesita el store y el
   // logger, y safeStorage solo está disponible con la app lista.
@@ -1383,6 +1801,7 @@ app.on('window-all-closed', () => {
 // Que no quede proceso zombi: se corta el realtime (websocket que mantendría vivo el
 // bucle de eventos) y se cierra el servidor HTTP antes de salir.
 app.on('before-quit', () => {
+  if (conexion) conexion.detener()
   cerrarHosts()
   destroyPosView()
   disconnect()

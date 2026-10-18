@@ -1,0 +1,673 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data:">
+<title>Caja sin conexión — TitiMenu</title>
+<!--
+  CAJA SIN CONEXIÓN de la app de escritorio. Página LOCAL, empaquetada en la app: no habla con
+  internet (la CSP lo prohíbe) y cobra con la foto de la caja que el POS web guardó la última
+  vez que abrió con conexión. Las ventas van a la cola del equipo (`cajaAlmacen.js`) ANTES de
+  imprimir nada, y las sube el POS web cuando vuelve la red.
+
+  Los importes se calculan EXACTAMENTE como el POS web (`dashboard/pos/page.tsx`: subtotal,
+  descuento, envío, total, cambio, mixto) y el paquete es el mismo que su INSERT, más `precios`
+  como en TitiStaff. Si allá cambia una fórmula, cambia aquí.
+-->
+<style>
+  :root { --bg:#0a0a0a; --panel:#121212; --line:rgba(255,255,255,.08); --mute:rgba(255,255,255,.45);
+          --red:#e63030; --blue:#60a5fa; --green:#48bb78; --amber:#d69e2e; --danger:#c53030; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif; background:var(--bg);
+         color:#fff; height:100vh; overflow:hidden; display:flex; flex-direction:column; font-size:14px; }
+  button { font:inherit; color:inherit; cursor:pointer; }
+  input, textarea, select { font:inherit; color:#fff; background:rgba(255,255,255,.05); border:1px solid var(--line);
+         border-radius:10px; padding:8px 10px; outline:none; width:100%; }
+  input:focus, textarea:focus { border-color:rgba(96,165,250,.5); }
+
+  #franja { padding:7px 12px; text-align:center; font-size:12.5px; font-weight:800; background:var(--amber); }
+  #franja.grave { background:var(--danger); }
+  #franja.ok { background:#2f855a; }
+  #franja button { margin-left:10px; background:#fff; color:#111; border:none; border-radius:7px; padding:3px 10px; font-weight:800; }
+
+  #cab { display:flex; align-items:center; gap:10px; padding:8px 14px; border-bottom:1px solid var(--line); background:var(--panel); }
+  #cab .biz { font-weight:800; }
+  #cab .who { color:var(--mute); font-size:12.5px; }
+  #cab .sp { flex:1; }
+  .chip { border:1px solid var(--line); background:rgba(255,255,255,.05); border-radius:999px; padding:5px 12px; font-size:12.5px; font-weight:700; }
+  .chip.warn { border-color:rgba(214,158,46,.5); color:#f6c35b; }
+  .chip.bad { border-color:rgba(229,62,62,.5); color:#fc8181; }
+
+  #main { flex:1; display:flex; min-height:0; }
+  #cat { flex:1; display:flex; flex-direction:column; min-width:0; }
+  #buscar { margin:10px 12px 6px; width:auto; }
+  #pills { display:flex; gap:6px; overflow-x:auto; padding:0 12px 8px; flex-shrink:0; }
+  .pill { white-space:nowrap; border:1px solid var(--line); background:rgba(255,255,255,.04); border-radius:999px; padding:6px 12px; font-size:12.5px; font-weight:700; }
+  .pill.on { background:rgba(230,48,48,.15); border-color:rgba(230,48,48,.45); color:#fca5a5; }
+  #grid { flex:1; overflow-y:auto; padding:4px 12px 16px; }
+  .sec { font-size:12px; font-weight:800; color:var(--mute); text-transform:uppercase; letter-spacing:.06em; margin:12px 2px 8px; }
+  .prods { display:grid; grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); gap:8px; }
+  .prod { text-align:left; background:rgba(255,255,255,.04); border:1px solid var(--line); border-radius:14px; padding:12px; min-height:84px; display:flex; flex-direction:column; justify-content:space-between; position:relative; }
+  .prod:hover { border-color:rgba(255,255,255,.22); }
+  .prod .n { font-weight:700; font-size:13px; line-height:1.3; }
+  .prod .p { color:#fca5a5; font-weight:800; font-size:13px; margin-top:6px; }
+  .prod .q { position:absolute; top:6px; right:6px; background:var(--red); border-radius:999px; font-size:11px; font-weight:800; padding:1px 7px; }
+  .prod:disabled { opacity:.35; cursor:not-allowed; }
+
+  #cart { width:390px; flex-shrink:0; border-left:1px solid var(--line); background:var(--panel); display:flex; flex-direction:column; }
+  #tipos { display:flex; gap:6px; padding:10px; border-bottom:1px solid var(--line); }
+  #lineas { flex:1; overflow-y:auto; padding:8px 10px; }
+  .lin { display:flex; align-items:center; gap:8px; padding:8px; border-radius:10px; background:rgba(255,255,255,.03); margin-bottom:6px; }
+  .lin .t { flex:1; min-width:0; }
+  .lin .t .a { font-size:13px; font-weight:700; }
+  .lin .t .b { font-size:11.5px; color:var(--mute); }
+  .lin .qb { width:26px; height:26px; border-radius:8px; border:1px solid var(--line); background:rgba(255,255,255,.06); font-weight:800; }
+  .lin .imp { font-weight:800; font-size:13px; min-width:70px; text-align:right; }
+  #pie { border-top:1px solid var(--line); padding:10px; display:flex; flex-direction:column; gap:8px; }
+  .fila { display:flex; justify-content:space-between; font-size:13px; color:rgba(255,255,255,.7); }
+  .fila.tot { font-size:17px; font-weight:900; color:#fff; border-top:1px solid var(--line); padding-top:6px; }
+  .seg { display:flex; gap:5px; }
+  .seg button { flex:1; padding:7px 4px; border-radius:9px; border:1px solid var(--line); background:rgba(255,255,255,.04); font-size:12px; font-weight:700; color:rgba(255,255,255,.55); }
+  .seg button.on { background:rgba(96,165,250,.15); border-color:rgba(96,165,250,.35); color:var(--blue); }
+  .seg button:disabled { opacity:.3; cursor:not-allowed; }
+  .hint { font-size:12px; }
+  .hint.ok { color:#68d391; } .hint.bad { color:#fc8181; } .hint.mute { color:var(--mute); }
+  .btn { border:none; border-radius:12px; padding:12px; font-weight:900; font-size:15px; background:var(--red); }
+  .btn:disabled { opacity:.35; cursor:not-allowed; }
+  .btn.sec2 { background:rgba(255,255,255,.08); font-size:13px; padding:10px; }
+  .btn.azul { background:#2b6cb0; }
+  .lnk { background:none; border:none; color:var(--blue); font-size:12.5px; font-weight:700; text-decoration:underline; }
+
+  .velo { position:fixed; inset:0; background:rgba(0,0,0,.65); display:flex; align-items:center; justify-content:center; z-index:10; }
+  .modal { background:#161616; border:1px solid rgba(255,255,255,.12); border-radius:18px; padding:20px; width:min(460px,92vw); max-height:88vh; overflow-y:auto; display:flex; flex-direction:column; gap:12px; }
+  .modal.ancho { width:min(760px,94vw); }
+  .modal h2 { font-size:17px; }
+  .modal p { color:rgba(255,255,255,.7); line-height:1.5; font-size:13.5px; }
+  .modal .acc { display:flex; gap:8px; flex-wrap:wrap; }
+  .modal .acc .btn { flex:1; }
+  .grupo { border:1px solid var(--line); border-radius:12px; padding:10px; }
+  .grupo .gt { font-weight:800; font-size:13px; margin-bottom:6px; }
+  .opc { display:flex; align-items:center; gap:8px; padding:6px 4px; font-size:13px; }
+  .opc input { width:auto; }
+  .err { background:rgba(229,62,62,.12); border:1px solid rgba(229,62,62,.3); color:#feb2b2; border-radius:10px; padding:9px 11px; font-size:13px; line-height:1.45; }
+  .ok { background:rgba(72,187,120,.12); border:1px solid rgba(72,187,120,.3); color:#9ae6b4; border-radius:10px; padding:9px 11px; font-size:13px; line-height:1.45; }
+  table { width:100%; border-collapse:collapse; font-size:12.5px; }
+  th, td { text-align:left; padding:7px 6px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--mute); font-weight:700; }
+
+  #bloqueo { flex:1; display:flex; align-items:center; justify-content:center; padding:30px; }
+  #bloqueo .caja { max-width:520px; text-align:center; display:flex; flex-direction:column; gap:14px; }
+  #bloqueo h1 { font-size:20px; }
+  #bloqueo p { color:rgba(255,255,255,.7); line-height:1.55; }
+</style>
+</head>
+<body>
+  <div id="franja">Sin conexión</div>
+  <div id="cab">
+    <span class="biz" id="biz"></span>
+    <span class="who" id="who"></span>
+    <span class="sp"></span>
+    <button class="chip" id="chipCola" title="Ventas cobradas sin conexión en este equipo"></button>
+    <button class="chip" id="btnCierre">Cerrar caja</button>
+    <button class="chip" id="btnEnLinea">Intentar en línea</button>
+  </div>
+  <div id="main"></div>
+  <div id="velo" class="velo" style="display:none"><div class="modal" id="modal"></div></div>
+
+<script>
+'use strict'
+// ── Utilidades ──────────────────────────────────────────────────────────────
+const $ = (id) => document.getElementById(id)
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]))
+const num = (v) => parseFloat(v) || 0
+let CUR = 'RD$'
+const din = (n) => CUR + Number(n || 0).toLocaleString('en-US', { maximumFractionDigits: 2 })
+const prov = (n) => 'P-' + String(n).padStart(4, '0')
+
+// ── Estado ──────────────────────────────────────────────────────────────────
+let E = null           // estado de la app (foto, conexión, resumen…)
+let catalogo = []      // categorías con productos disponibles
+let cart = []          // { product, qty, price, selectedOptions }
+let orderType = 'local', custName = '', custPhone = '', custAddress = '', deliveryFeeInput = ''
+let discountType = null, discountValue = ''
+let payMethod = 'cash', cashGiven = '', cardAmount = '', notes = ''
+let buscar = '', catActiva = ''
+let cobrando = false
+let ultimaVenta = null // la venta recién guardada (para el post-venta)
+let modalAbierto = false
+
+// ── Cálculos: EXACTOS a los del POS web ─────────────────────────────────────
+const subtotal = () => cart.reduce((s, i) => s + i.price * i.qty, 0)
+function discountAmount() {
+  if (!discountType || !discountValue) return 0
+  const v = num(discountValue), st = subtotal()
+  if (discountType === 'percent') return Math.round(st * v / 100)
+  return Math.min(v, st)
+}
+function deliveryFee() {
+  if (orderType !== 'delivery') return 0
+  const v = num(deliveryFeeInput)
+  return v > 0 ? v : 0
+}
+const total = () => subtotal() - discountAmount() + deliveryFee()
+const changeAmount = () => payMethod === 'cash' ? Math.max(0, num(cashGiven) - total()) : 0
+const optKey = (opts) => (opts || []).map(o => o.id).sort().join('-')
+
+function customerOk() {
+  return orderType === 'local' ||
+    (orderType === 'takeout' && !!custName.trim()) ||
+    (orderType === 'delivery' && !!custName.trim() && !!custAddress.trim())
+}
+function canProcess() {
+  const t = total(), mixCard = num(cardAmount), mixCash = num(cashGiven)
+  return cart.length > 0 && !cobrando && customerOk() && (
+    payMethod === 'card' ||
+    (payMethod === 'cash' && (!cashGiven || num(cashGiven) >= t)) ||
+    (payMethod === 'mixed' && mixCard > 0 && mixCard < t && mixCash >= (t - mixCard))
+  )
+}
+
+/** El paquete de `pos_sincronizar_venta`: el INSERT del POS web campo a campo + `precios`. */
+function armarPayload() {
+  const f = E.foto, ses = f.sesion
+  const cashG = num(cashGiven), cardAmt = num(cardAmount), t = total()
+  const items = cart.map(i => ({
+    name: i.product.name
+      + (i.product.sold_by_weight ? ` (${i.qty} ${i.product.weight_unit ?? 'lb'})` : '')
+      + (i.selectedOptions && i.selectedOptions.length ? ' (' + i.selectedOptions.map(o => o.name).join(', ') + ')' : ''),
+    qty: i.qty, price: i.price, subtotal: i.price * i.qty,
+    product_type: i.product.product_type ?? 'food',
+    product_id: i.product.id,
+  }))
+  const precios = []
+  for (const i of cart) if (!precios.some(p => p.product_id === i.product.id)) precios.push({ product_id: i.product.id, precio: Number(i.product.price) })
+  return {
+    business_id: f.negocioId,
+    session_id: ses.id,
+    items,
+    subtotal: subtotal(),
+    discount_type: discountType,
+    discount_value: num(discountValue),
+    discount_amount: discountAmount(),
+    total: t,
+    order_type: orderType,
+    customer_name: orderType === 'local' ? null : (custName.trim() || null),
+    customer_phone: orderType === 'local' ? null : (custPhone.trim() || null),
+    customer_address: orderType === 'delivery' ? (custAddress.trim() || null) : null,
+    delivery_fee: orderType === 'delivery' ? deliveryFee() : 0,
+    cashier_name: ses.cashier_name ?? f.usuario.nombre ?? null,
+    payment_method: payMethod,
+    cash_given: (payMethod === 'cash' || payMethod === 'mixed') ? cashG : null,
+    card_amount: payMethod === 'card' ? t : payMethod === 'mixed' ? cardAmt : null,
+    change_amount: payMethod === 'cash' ? changeAmount() : payMethod === 'mixed' ? (cashG - (t - cardAmt)) : null,
+    notes: notes.trim() || null,
+    precios,
+  }
+}
+
+// ── Carga ───────────────────────────────────────────────────────────────────
+async function cargar() {
+  E = await window.caja.estado()
+  if (!E) return
+  CUR = (E.foto && E.foto.config && E.foto.config.currency) || 'RD$'
+  pintarFranja()
+  pintarCabecera()
+  const bloqueo = motivoBloqueo()
+  if (bloqueo) { pintarBloqueo(bloqueo); return }
+  catalogo = (E.foto.catalogo || []).map(c => ({
+    ...c, products: (c.products || []).filter(p => p.is_available && (p.stock == null || p.stock > 0)),
+  })).filter(c => c.products.length > 0)
+  if (!catActiva && catalogo[0]) catActiva = catalogo[0].id
+  pintarMain()
+}
+
+function motivoBloqueo() {
+  if (E.error) return { t: 'No se puede cobrar sin conexión', d: E.error }
+  const f = E.foto
+  if (!f) return { t: 'Esta computadora no tiene datos de la caja', d: 'Para cobrar sin conexión hay que abrir el POS una vez con internet: ahí se guardan el catálogo y la caja abierta.' }
+  const rol = f.usuario && f.usuario.rol
+  if (rol !== 'owner' && rol !== 'cashier') return { t: 'Sin conexión solo cobran el dueño y el cajero.', d: 'Entra con un usuario de caja cuando vuelva el internet.' }
+  if (!f.sesion) return { t: 'La caja estaba cerrada', d: 'Sin conexión no se puede abrir la caja. Ábrela cuando vuelva el internet.' }
+  return null
+}
+
+function pintarFranja() {
+  const fr = $('franja')
+  if (E.conexion.enLinea) {
+    fr.className = 'ok'
+    fr.innerHTML = '✓ Volvió la conexión <button id="volver">Volver a la caja en línea</button>'
+    $('volver').onclick = () => window.caja.enLinea()
+    return
+  }
+  const f = E.franja || { texto: 'Sin conexión', grave: false }
+  fr.className = f.grave ? 'grave' : ''
+  fr.textContent = f.texto
+}
+
+function pintarCabecera() {
+  const f = E.foto
+  $('biz').textContent = f ? f.config.name : 'TitiMenu'
+  $('who').textContent = f ? `${f.usuario.nombre || ''} · ${f.usuario.rol === 'owner' ? 'Dueño' : f.usuario.rol === 'cashier' ? 'Cajero' : f.usuario.rol}` : ''
+  const r = E.resumen
+  const chip = $('chipCola')
+  if (!r) { chip.style.display = 'none'; return }
+  chip.style.display = ''
+  const partes = []
+  partes.push(r.pendientes === 1 ? '1 venta pendiente de subir' : `${r.pendientes} ventas pendientes de subir`)
+  if (r.problemas) partes.push(r.problemas === 1 ? '1 con problema' : `${r.problemas} con problema`)
+  chip.textContent = partes.join(' · ')
+  chip.className = 'chip' + (r.problemas ? ' bad' : r.pendientes ? ' warn' : '')
+}
+
+function pintarBloqueo(b) {
+  $('main').innerHTML = `<div id="bloqueo"><div class="caja"><div style="font-size:40px">📡</div>
+    <h1>${esc(b.t)}</h1><p>${esc(b.d)}</p>
+    <p style="font-size:12.5px;color:var(--mute)">Mesas, pedidos, delivery, facturas, inventario y abrir o cerrar la caja necesitan conexión.</p>
+    <button class="btn sec2" id="bIn">Intentar en línea</button></div></div>`
+  $('bIn').onclick = () => window.caja.enLinea()
+}
+
+// ── Catálogo ────────────────────────────────────────────────────────────────
+function qtyEnCarrito(id) { return cart.filter(i => i.product.id === id).reduce((s, i) => s + i.qty, 0) }
+
+function pintarMain() {
+  $('main').innerHTML = `
+    <div id="cat">
+      <input id="buscar" placeholder="Buscar producto…" value="${esc(buscar)}">
+      <div id="pills"></div>
+      <div id="grid"></div>
+    </div>
+    <div id="cart">
+      <div id="tipos" class="seg"></div>
+      <div id="lineas"></div>
+      <div id="pie"></div>
+    </div>`
+  $('buscar').oninput = (e) => { buscar = e.target.value; pintarGrid() }
+  pintarPills(); pintarGrid(); pintarCarrito()
+}
+
+function pintarPills() {
+  $('pills').innerHTML = catalogo.map(c => `<button class="pill ${c.id === catActiva ? 'on' : ''}" data-c="${esc(c.id)}">${esc(c.emoji || '')} ${esc(c.name)}</button>`).join('')
+  $('pills').querySelectorAll('.pill').forEach(b => b.onclick = () => {
+    catActiva = b.dataset.c; buscar = ''; $('buscar').value = ''
+    pintarPills(); pintarGrid()
+    const s = document.querySelector(`[data-sec="${CSS.escape(catActiva)}"]`)
+    if (s) s.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  })
+}
+
+function tarjeta(p) {
+  const q = qtyEnCarrito(p.id)
+  const agotado = p.stock != null && q >= p.stock
+  return `<button class="prod" data-p="${esc(p.id)}" ${agotado ? 'disabled' : ''}>
+    ${q ? `<span class="q">${q}</span>` : ''}
+    <span class="n">${esc(p.emoji || '')} ${esc(p.name)}</span>
+    <span class="p">${din(p.price)}${p.sold_by_weight ? ' / ' + esc(p.weight_unit || 'lb') : ''}</span></button>`
+}
+
+function pintarGrid() {
+  const g = $('grid')
+  const q = buscar.trim().toLowerCase()
+  if (q) {
+    const res = catalogo.flatMap(c => c.products).filter(p => p.name.toLowerCase().includes(q))
+    g.innerHTML = res.length ? `<div class="prods">${res.map(tarjeta).join('')}</div>` : '<p class="hint mute" style="padding:20px">Nada con ese nombre.</p>'
+  } else {
+    g.innerHTML = catalogo.map(c => `<div class="sec" data-sec="${esc(c.id)}">${esc(c.emoji || '')} ${esc(c.name)}</div>
+      <div class="prods">${c.products.map(tarjeta).join('')}</div>`).join('')
+  }
+  g.querySelectorAll('.prod').forEach(b => b.onclick = () => tocarProducto(b.dataset.p))
+}
+
+const productoPorId = (id) => catalogo.flatMap(c => c.products).find(p => p.id === id)
+
+function tocarProducto(id) {
+  const p = productoPorId(id)
+  if (!p) return
+  if (p.sold_by_weight) return modalPeso(p)
+  if (p.product_option_groups && p.product_option_groups.length) return modalOpciones(p)
+  agregar(p)
+}
+
+/** `addToCart` del POS web. */
+function agregar(product, selectedOptions = [], weightQty) {
+  const qty = weightQty ?? 1
+  const extras = selectedOptions.reduce((s, o) => s + Number(o.price_adjustment), 0)
+  const precio = Number(product.price) + extras
+  if (product.stock != null && qtyEnCarrito(product.id) + qty > product.stock) return
+  if (product.sold_by_weight) {
+    cart.push({ product, qty, price: precio, selectedOptions })
+  } else {
+    const ex = cart.find(i => i.product.id === product.id && optKey(i.selectedOptions) === optKey(selectedOptions))
+    if (ex) ex.qty += 1
+    else cart.push({ product, qty: 1, price: precio, selectedOptions })
+  }
+  pintarGrid(); pintarCarrito()
+}
+
+// ── Carrito ─────────────────────────────────────────────────────────────────
+function pintarCarrito() {
+  $('tipos').innerHTML = [['local', '🏠 Local'], ['takeout', '🥡 Para llevar'], ['delivery', '🛵 Delivery']]
+    .map(([k, l]) => `<button data-t="${k}" class="${orderType === k ? 'on' : ''}">${l}</button>`).join('')
+  $('tipos').querySelectorAll('button').forEach(b => b.onclick = () => elegirTipo(b.dataset.t))
+
+  const L = $('lineas')
+  if (!cart.length) {
+    L.innerHTML = '<p class="hint mute" style="text-align:center;padding:30px 10px">Toca un producto para agregarlo.</p>'
+  } else {
+    L.innerHTML = cart.map((i, k) => `<div class="lin">
+      <button class="qb" data-k="${k}" data-d="-1">−</button>
+      <div class="t"><div class="a">${esc(i.product.name)}${i.product.sold_by_weight ? ` (${i.qty} ${esc(i.product.weight_unit || 'lb')})` : ''}</div>
+        ${i.selectedOptions && i.selectedOptions.length ? `<div class="b">${esc(i.selectedOptions.map(o => o.name).join(', '))}</div>` : ''}
+        <div class="b">${i.product.sold_by_weight ? '' : i.qty + ' × '}${din(i.price)}</div></div>
+      ${i.product.sold_by_weight ? '' : `<button class="qb" data-k="${k}" data-d="1">+</button>`}
+      <span class="imp">${din(i.price * i.qty)}</span></div>`).join('')
+    L.querySelectorAll('.qb').forEach(b => b.onclick = () => {
+      const i = cart[Number(b.dataset.k)], d = Number(b.dataset.d)
+      if (d > 0 && i.product.stock != null && qtyEnCarrito(i.product.id) + 1 > i.product.stock) return
+      // Una línea por peso no se suma de a uno: el «−» la quita entera.
+      if (i.product.sold_by_weight) cart = cart.filter(x => x !== i)
+      else {
+        i.qty += d
+        if (i.qty <= 0) cart = cart.filter(x => x !== i)
+      }
+      pintarGrid(); pintarCarrito()
+    })
+  }
+  pintarPie()
+}
+
+function pintarPie() {
+  const P = $('pie')
+  const t = total(), da = discountAmount(), df = deliveryFee()
+  const cli = orderType === 'local' ? '' :
+    `<div class="fila"><span>${esc(custName || 'Sin nombre')}${custPhone ? ' · ' + esc(custPhone) : ''}</span><button class="lnk" id="eCli">Editar</button></div>`
+  P.innerHTML = `
+    ${cli}
+    <div class="fila"><span>Subtotal</span><span>${din(subtotal())}</span></div>
+    <div class="fila"><span>Descuento ${discountType === 'percent' && discountValue ? '(' + esc(discountValue) + '%)' : ''} <button class="lnk" id="eDesc">${da ? 'Cambiar' : 'Agregar'}</button></span><span>${da ? '−' + din(da) : ''}</span></div>
+    ${orderType === 'delivery' ? `<div class="fila"><span>Envío</span><span>${din(df)}</span></div>` : ''}
+    <div class="fila tot"><span>TOTAL</span><span>${din(t)}</span></div>
+    <div class="seg" id="pagos">
+      <button data-m="cash" class="${payMethod === 'cash' ? 'on' : ''}">💵 Efectivo</button>
+      <button data-m="card" class="${payMethod === 'card' ? 'on' : ''}">💳 Tarjeta</button>
+      <button data-m="mixed" class="${payMethod === 'mixed' ? 'on' : ''}">⚡ Mixto</button>
+      <button disabled title="Sin conexión no se aceptan transferencias: no hay cómo comprobar que llegó el dinero.">🏦 Transf.</button>
+    </div>
+    ${(payMethod === 'cash' || payMethod === 'mixed') ? `<input id="cash" type="number" inputmode="decimal" placeholder="Efectivo recibido (${esc(CUR)})" value="${esc(cashGiven)}">` : ''}
+    ${payMethod === 'mixed' ? `<input id="card" type="number" inputmode="decimal" placeholder="Monto en tarjeta (${esc(CUR)})" value="${esc(cardAmount)}">` : ''}
+    <div id="hintPago"></div>
+    <input id="notas" placeholder="Nota (opcional)" value="${esc(notes)}">
+    <button class="btn" id="cobrar">Cobrar ${din(t)}</button>
+    <p class="hint mute" style="text-align:center">Se guarda en esta computadora y se registra al volver la conexión.</p>`
+  P.querySelectorAll('#pagos button[data-m]').forEach(b => b.onclick = () => { payMethod = b.dataset.m; pintarPie() })
+  if ($('cash')) $('cash').oninput = (e) => { cashGiven = e.target.value; refrescarCobro() }
+  if ($('card')) $('card').oninput = (e) => { cardAmount = e.target.value; refrescarCobro() }
+  $('notas').oninput = (e) => { notes = e.target.value }
+  $('eDesc').onclick = modalDescuento
+  if ($('eCli')) $('eCli').onclick = () => modalCliente(orderType)
+  $('cobrar').onclick = cobrar
+  refrescarCobro()
+}
+
+function refrescarCobro() {
+  const t = total(), h = $('hintPago')
+  let html = ''
+  if (payMethod === 'cash' && cashGiven) {
+    html = num(cashGiven) >= t ? `<p class="hint ok">Cambio: ${din(changeAmount())}</p>` : '<p class="hint bad">⚠️ Monto insuficiente</p>'
+  }
+  if (payMethod === 'mixed') {
+    const c = num(cardAmount), e = num(cashGiven)
+    if (cardAmount && !(c > 0 && c < t)) html = '<p class="hint bad">La parte en tarjeta tiene que ser mayor que 0 y menor que el total.</p>'
+    else if (cardAmount && cashGiven && e < t - c) html = `<p class="hint bad">Falta efectivo: cubre ${din(t - c)}.</p>`
+    else if (cardAmount && cashGiven) html = `<p class="hint ok">Cambio: ${din(e - (t - c))}</p>`
+  }
+  if (!customerOk() && cart.length) html += `<p class="hint bad">${orderType === 'delivery' ? 'Delivery: falta el nombre o la dirección del cliente.' : 'Para llevar: falta el nombre del cliente.'}</p>`
+  h.innerHTML = html
+  $('cobrar').disabled = !canProcess()
+  $('cobrar').textContent = cobrando ? 'Guardando…' : `Cobrar ${din(t)}`
+}
+
+function elegirTipo(t) {
+  if (t === 'local') {
+    orderType = 'local'; custName = ''; custPhone = ''; custAddress = ''; deliveryFeeInput = ''
+    pintarCarrito(); return
+  }
+  modalCliente(t)
+}
+
+// ── Cobrar ──────────────────────────────────────────────────────────────────
+async function cobrar() {
+  if (!canProcess()) return
+  cobrando = true; refrescarCobro()
+  try {
+    const payload = armarPayload()
+    const r = await window.caja.cobrar({ payload })
+    if (!r || !r.ok) { modalAviso('No se cobró', (r && r.error) || 'No se pudo guardar la venta. NO se cobró.'); return }
+    ultimaVenta = r.venta
+    cart = []; discountType = null; discountValue = ''; cashGiven = ''; cardAmount = ''; notes = ''
+    payMethod = 'cash'; orderType = 'local'; custName = ''; custPhone = ''; custAddress = ''; deliveryFeeInput = ''
+    await refrescarEstado()
+    pintarMain()
+    modalPostVenta()
+  } finally {
+    cobrando = false
+    if ($('cobrar')) refrescarCobro()
+  }
+}
+
+async function refrescarEstado() {
+  const nuevo = await window.caja.estado()
+  if (nuevo) { E = nuevo; pintarFranja(); pintarCabecera() }
+}
+
+// ── Modales ─────────────────────────────────────────────────────────────────
+function abrir(html, ancho) {
+  $('modal').className = 'modal' + (ancho ? ' ancho' : '')
+  $('modal').innerHTML = html
+  $('velo').style.display = 'flex'
+  modalAbierto = true
+}
+function cerrar() { $('velo').style.display = 'none'; modalAbierto = false; intentarVolverSolo() }
+$('velo').addEventListener('mousedown', (e) => { if (e.target === $('velo')) cerrar() })
+
+function modalAviso(titulo, texto) {
+  abrir(`<h2>${esc(titulo)}</h2><div class="err">${esc(texto)}</div><div class="acc"><button class="btn sec2" id="mOk">Entendido</button></div>`)
+  $('mOk').onclick = cerrar
+}
+
+function modalPeso(p) {
+  abrir(`<h2>${esc(p.name)}</h2><p>${din(p.price)} por ${esc(p.weight_unit || 'lb')}</p>
+    <input id="mPeso" type="number" inputmode="decimal" step="0.01" placeholder="Cantidad (${esc(p.weight_unit || 'lb')})" autofocus>
+    <div class="acc"><button class="btn sec2" id="mNo">Cancelar</button><button class="btn" id="mSi">Agregar</button></div>`)
+  $('mNo').onclick = cerrar
+  $('mSi').onclick = () => {
+    const w = num($('mPeso').value)
+    if (w <= 0) return
+    cerrar()
+    // Como el web: un producto por peso entra sin opciones (`addToCart(weightModal, [], qty)`).
+    agregar(p, [], w)
+  }
+  setTimeout(() => $('mPeso') && $('mPeso').focus(), 30)
+}
+
+function modalOpciones(p) {
+  const grupos = [...p.product_option_groups].sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+  abrir(`<h2>${esc(p.name)}</h2>
+    ${grupos.map(g => {
+      const ops = [...(g.product_options || [])].sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+      const unico = g.max_selections === 1
+      return `<div class="grupo" data-g="${esc(g.id)}"><div class="gt">${esc(g.name)}${g.is_required ? ' *' : ''}${g.max_selections && g.max_selections > 1 ? ` (máx. ${g.max_selections})` : ''}</div>
+        ${ops.map(o => `<label class="opc"><input type="${unico ? 'radio' : 'checkbox'}" name="g-${esc(g.id)}" value="${esc(o.id)}"> ${esc(o.name)}${Number(o.price_adjustment) ? ` <span class="hint mute">+${din(o.price_adjustment)}</span>` : ''}</label>`).join('')}</div>`
+    }).join('')}
+    <div id="mErr"></div>
+    <div class="acc"><button class="btn sec2" id="mNo">Cancelar</button><button class="btn" id="mSi">Agregar</button></div>`)
+  $('mNo').onclick = cerrar
+  $('mSi').onclick = () => {
+    const elegidas = []
+    for (const g of grupos) {
+      const marcadas = [...document.querySelectorAll(`[name="g-${CSS.escape(g.id)}"]:checked`)].map(x => x.value)
+      if (g.is_required && marcadas.length === 0) { $('mErr').innerHTML = `<div class="err">Elige una opción en «${esc(g.name)}».</div>`; return }
+      if (g.max_selections && marcadas.length > g.max_selections) { $('mErr').innerHTML = `<div class="err">En «${esc(g.name)}» se pueden elegir ${g.max_selections}.</div>`; return }
+      for (const id of marcadas) elegidas.push((g.product_options || []).find(o => o.id === id))
+    }
+    cerrar()
+    agregar(p, elegidas.filter(Boolean))
+  }
+}
+
+function modalDescuento() {
+  abrir(`<h2>Descuento</h2>
+    <div class="seg"><button id="dP" class="${discountType !== 'fixed' ? 'on' : ''}">%</button><button id="dF" class="${discountType === 'fixed' ? 'on' : ''}">${esc(CUR)}</button></div>
+    <input id="dV" type="number" inputmode="decimal" placeholder="Valor" value="${esc(discountValue)}">
+    <div class="acc"><button class="btn sec2" id="dQ">Quitar</button><button class="btn" id="dOk">Aplicar</button></div>`)
+  let tipo = discountType === 'fixed' ? 'fixed' : 'percent'
+  $('dP').onclick = () => { tipo = 'percent'; $('dP').className = 'on'; $('dF').className = '' }
+  $('dF').onclick = () => { tipo = 'fixed'; $('dF').className = 'on'; $('dP').className = '' }
+  $('dQ').onclick = () => { discountType = null; discountValue = ''; cerrar(); pintarPie() }
+  $('dOk').onclick = () => {
+    const v = $('dV').value
+    discountType = num(v) > 0 ? tipo : null
+    discountValue = num(v) > 0 ? v : ''
+    cerrar(); pintarPie()
+  }
+}
+
+function modalCliente(t) {
+  abrir(`<h2>${t === 'delivery' ? 'Delivery' : 'Para llevar'}</h2>
+    <input id="cN" placeholder="Nombre del cliente *" value="${esc(custName)}">
+    <input id="cT" placeholder="Teléfono" value="${esc(custPhone)}">
+    ${t === 'delivery' ? `<input id="cD" placeholder="Dirección *" value="${esc(custAddress)}">
+      <input id="cE" type="number" inputmode="decimal" placeholder="Costo de envío (${esc(CUR)})" value="${esc(deliveryFeeInput)}">` : ''}
+    <div id="cErr"></div>
+    <div class="acc"><button class="btn sec2" id="cNo">Cancelar</button><button class="btn" id="cSi">Listo</button></div>`)
+  $('cNo').onclick = cerrar
+  $('cSi').onclick = () => {
+    const n = $('cN').value.trim(), d = t === 'delivery' ? $('cD').value.trim() : ''
+    if (!n || (t === 'delivery' && !d)) { $('cErr').innerHTML = `<div class="err">${t === 'delivery' ? 'Falta el nombre o la dirección.' : 'Falta el nombre.'}</div>`; return }
+    orderType = t; custName = n; custPhone = $('cT').value.trim()
+    custAddress = d
+    deliveryFeeInput = t === 'delivery' ? $('cE').value : ''
+    cerrar(); pintarCarrito()
+  }
+  setTimeout(() => $('cN') && $('cN').focus(), 30)
+}
+
+function modalPostVenta(msg) {
+  const v = ultimaVenta
+  const f = E.foto
+  const puedeFactura = !!f.offlineDiferido
+  const d = E.disponibles || { e32: 0, e31: 0 }
+  abrir(`<h2>Venta ${prov(v.numeroProvisional)} guardada</h2>
+    <p>Total ${din(v.total)}. Está guardada en esta computadora y se registrará sola cuando vuelva la conexión.</p>
+    ${msg || ''}
+    <div class="acc"><button class="btn azul" id="pRec">🖨️ Imprimir recibo</button></div>
+    ${puedeFactura ? `<div class="grupo"><div class="gt">Factura fiscal (sin conexión)</div>
+      ${v.fiscalEncf ? `<div class="ok">Factura ${esc(v.fiscalEncf)} emitida en contingencia.</div>
+        <div class="acc"><button class="btn sec2" id="pReF">Reimprimir factura</button></div>` : `
+      <div class="seg" style="margin-bottom:8px"><button id="f32" class="on">Consumo (E32) · ${d.e32}</button><button id="f31">Crédito fiscal (E31) · ${d.e31}</button></div>
+      <input id="fR" placeholder="RNC o cédula del cliente" style="margin-bottom:6px">
+      <input id="fN" placeholder="Nombre o razón social" style="margin-bottom:6px">
+      <div id="fErr"></div>
+      <div class="acc"><button class="btn sec2" id="pFac">Emitir factura</button></div>`}
+    </div>` : ''}
+    <div class="acc"><button class="btn" id="pOk">Nueva venta</button></div>`)
+  $('pOk').onclick = cerrar
+  $('pRec').onclick = async () => {
+    $('pRec').disabled = true; $('pRec').textContent = 'Imprimiendo…'
+    const r = await window.caja.imprimirRecibo(v.clientUuid)
+    $('pRec').disabled = false; $('pRec').textContent = r.ok ? '✓ Recibo impreso — reimprimir' : '🖨️ Imprimir recibo'
+    if (!r.ok) modalPostVenta(`<div class="err">El recibo no se imprimió: ${esc(r.error)}. La venta está guardada.</div>`)
+  }
+  if ($('pReF')) $('pReF').onclick = async () => {
+    const r = await window.caja.reimprimirFactura(v.clientUuid)
+    if (!r.ok) modalPostVenta(`<div class="err">${esc(r.error)}</div>`)
+  }
+  if ($('pFac')) {
+    let tipo = 'B02'
+    $('f32').onclick = () => { tipo = 'B02'; $('f32').className = 'on'; $('f31').className = '' }
+    $('f31').onclick = () => { tipo = 'B01'; $('f31').className = 'on'; $('f32').className = '' }
+    $('pFac').onclick = async () => {
+      $('pFac').disabled = true; $('pFac').textContent = 'Emitiendo…'
+      const r = await window.caja.factura(v.clientUuid, tipo, $('fR').value, $('fN').value)
+      ultimaVenta = (await window.caja.ventas()).find(x => x.clientUuid === v.clientUuid) || v
+      await refrescarEstado()
+      if (r.ok) modalPostVenta(`<div class="ok">Factura ${esc(r.encf)} impresa con el QR de contingencia.</div>`)
+      else if (ultimaVenta.fiscalEncf) modalPostVenta(`<div class="err">${esc(r.error)}</div>`)
+      else { $('fErr').innerHTML = `<div class="err">${esc(r.error)}</div>`; $('pFac').disabled = false; $('pFac').textContent = 'Emitir factura' }
+    }
+  }
+}
+
+const ESTADO = { PENDIENTE: 'Pendiente de subir', SUBIDA: 'Registrada', PROBLEMA: 'Con problema' }
+
+async function modalVentas() {
+  const vs = await window.caja.ventas()
+  abrir(`<h2>Ventas sin conexión en este equipo</h2>
+    <p>Se suben solas, en orden, cuando el POS en línea vuelve a abrir con conexión. Ninguna se borra hasta que el servidor la confirma.</p>
+    ${vs.length ? `<table><thead><tr><th>Venta</th><th>Hora</th><th>Total</th><th>Estado</th><th></th></tr></thead><tbody>
+      ${vs.map(v => `<tr>
+        <td>${prov(v.numeroProvisional)}${v.fiscalEncf ? `<br><span class="hint mute">${esc(v.fiscalEncf)}</span>` : ''}</td>
+        <td>${new Date(v.vendidoEn).toLocaleTimeString('es-DO', { hour: 'numeric', minute: '2-digit' })}</td>
+        <td>${din(v.total)}<br><span class="hint mute">${esc({ cash: 'Efectivo', card: 'Tarjeta', mixed: 'Mixto' }[v.metodoPago] || v.metodoPago)}</span></td>
+        <td>${esc(ESTADO[v.estado] || v.estado)}${v.numeroDefinitivo ? ` #${v.numeroDefinitivo}` : ''}
+          ${v.estado === 'PROBLEMA' && v.ultimoError ? `<br><span class="hint bad">${esc(v.ultimoError)}</span>` : ''}
+          ${v.fiscalError ? `<br><span class="hint bad">${esc(v.fiscalError)}</span>` : ''}
+          ${v.estado === 'PENDIENTE' && v.ultimoError ? `<br><span class="hint mute">${esc(v.ultimoError)}</span>` : ''}</td>
+        <td style="white-space:nowrap">
+          <button class="lnk" data-rec="${esc(v.clientUuid)}">Recibo</button>
+          ${v.fiscalEncf && v.fiscalQr ? `<button class="lnk" data-fac="${esc(v.clientUuid)}">Factura</button>` : ''}
+          ${v.estado === 'PROBLEMA' ? `<button class="lnk" data-dev="${esc(v.clientUuid)}">Reintentar</button>` : ''}
+        </td></tr>`).join('')}</tbody></table>` : '<p class="hint mute">Todavía no hay ventas cobradas sin conexión.</p>'}
+    <div id="vMsg"></div>
+    <div class="acc"><button class="btn sec2" id="vOk">Cerrar</button></div>`, true)
+  $('vOk').onclick = cerrar
+  const msg = (h) => { $('vMsg').innerHTML = h }
+  document.querySelectorAll('[data-rec]').forEach(b => b.onclick = async () => {
+    const r = await window.caja.imprimirRecibo(b.dataset.rec)
+    msg(r.ok ? '<div class="ok">Recibo enviado a la impresora.</div>' : `<div class="err">${esc(r.error)}</div>`)
+  })
+  document.querySelectorAll('[data-fac]').forEach(b => b.onclick = async () => {
+    const r = await window.caja.reimprimirFactura(b.dataset.fac)
+    msg(r.ok ? '<div class="ok">Factura enviada a la impresora.</div>' : `<div class="err">${esc(r.error)}</div>`)
+  })
+  document.querySelectorAll('[data-dev]').forEach(b => b.onclick = async () => {
+    await window.caja.devolverACola(b.dataset.dev)
+    await refrescarEstado(); modalVentas()
+  })
+}
+
+function modalCierre() {
+  const r = E.resumen || { pendientes: 0, problemas: 0 }
+  const txt = r.pendientes > 0
+    ? `No se puede cerrar la caja: hay ${r.pendientes === 1 ? '1 venta pendiente' : r.pendientes + ' ventas pendientes'} de subir y el cuadre del efectivo saldría mal. Ciérrala cuando vuelva la conexión y se hayan subido.`
+    : 'Cerrar la caja necesita conexión. Ciérrala desde el POS en línea cuando vuelva el internet.'
+  abrir(`<h2>Cerrar caja</h2><div class="err">${esc(txt)}</div><div class="acc"><button class="btn sec2" id="cOk">Entendido</button></div>`)
+  $('cOk').onclick = cerrar
+}
+
+// ── Conexión ────────────────────────────────────────────────────────────────
+/** Volvió la red: si no hay nada a medias, se vuelve sola a la caja en línea (que sube lo pendiente). */
+let volviendo = null
+function intentarVolverSolo() {
+  if (!E || !E.conexion.enLinea || cart.length || modalAbierto || cobrando || volviendo) return
+  volviendo = setTimeout(() => {
+    volviendo = null
+    if (E.conexion.enLinea && !cart.length && !modalAbierto && !cobrando) window.caja.enLinea()
+  }, 4000)
+}
+
+window.caja.onConexion(async (estado) => {
+  await refrescarEstado()
+  if (estado.enLinea) intentarVolverSolo()
+})
+
+$('chipCola').onclick = modalVentas
+$('btnCierre').onclick = modalCierre
+$('btnEnLinea').onclick = () => window.caja.enLinea()
+// Los avisos de 4 h y 12 h dependen del reloj, no de un evento: se repinta cada minuto.
+setInterval(refrescarEstado, 60000)
+
+cargar()
+</script>
+</body>
+</html>

@@ -60,6 +60,14 @@
       margin-left: auto;
       -webkit-app-region: no-drag;
     }
+    /* Sin conexión con el POS en línea montado: la salida a la caja sin conexión. */
+    #offline {
+      -webkit-app-region: no-drag;
+      display: none;
+      background: #b7791f; border: none; color: #fff; font-size: 13px; font-weight: 800;
+      padding: 8px 14px; border-radius: 9px; cursor: pointer;
+    }
+    body.sin-red.en-web #offline { display: inline-block; }
     #dot { width: 8px; height: 8px; border-radius: 50%; background: #e53e3e; flex-shrink: 0; }
     #dot.on { background: #48bb78; }
 
@@ -120,6 +128,7 @@
     <button id="back">← Inicio</button>
     <span id="dot"></span>
     <span id="who">TitiMenu</span>
+    <button id="offline">Sin conexión — cobrar sin conexión</button>
     <span id="origin"></span>
   </div>
 
@@ -184,12 +193,17 @@
         : state.embedded === 'staff' ? 'Empleado'
         : (state.businessName || 'TitiMenu')
       $('origin').textContent = state.origin || ''
+      // Con el POS en línea montado y la red caída, la barra ofrece pasar a la caja sin
+      // conexión (si hay foto). No se cambia sola: podría haber una venta a medias en pantalla.
+      document.body.classList.toggle('sin-red', state.enLinea === false && !!state.hayFoto)
+      document.body.classList.toggle('en-web', state.modo === 'web')
     }
 
     $('c-owner').onclick   = () => window.shell.open('owner')
     $('c-staff').onclick   = () => window.shell.open('staff')
     $('c-printer').onclick = () => window.shell.open('printer')
     $('back').onclick      = () => window.shell.goHome()
+    $('offline').onclick   = () => window.shell.sinConexion()
 
     window.shell.onState(render)
     window.shell.getState().then(render)
