@@ -8,6 +8,7 @@ const { getUSBPrinters, isDrink, printPOSReceipt, printFiscalReceipt, printTable
 const { setCallbacks, startListening, disconnect } = require('./supabase')
 const { setSalida: setSalidaTiempos } = require('./tiempos')
 const { encolar } = require('./colas')
+const { PrintJobError, crearHandlePrintJob, crearComandas } = require('./trabajos')
 const { cerrarHosts } = require('./spoolerWin')
 const { CajaAlmacen, CajaDanada, ColaLlena } = require('./cajaAlmacen')
 const RC = require('./cajaReglas')
@@ -746,12 +747,7 @@ async function onNewOrder(type, order) {
     return
   }
 
-  const items = order.items || order.order_items || []
-  // `isDrink` viene de printer.js y es el ÚNICO criterio de estación del bridge: el mismo
-  // que usa printTableComanda para dibujar las secciones. Tenerlo escrito aquí también fue
-  // lo que permitió que las dos respuestas divergieran sin que nadie lo notara.
-  const foodItems = items.filter(i => !isDrink(i))
-  const drinkItems = items.filter(isDrink)
+  // Qué va a cocina y qué a barra (`isDrink`) lo decide `crearComandas` en trabajos.js.
 
   const businessInfo = {
     name: businessName,
@@ -765,46 +761,9 @@ async function onNewOrder(type, order) {
   }
   console.log('[business] currency:', businessInfo.currency)
 
-  // NO es async a propósito: devuelve el ARRAY de trabajos ya encolados, y quien llama
-  // lo esparce con `...`. Siendo async devolvía una Promesa y `...promesa` revienta con
-  // «Spread syntax requires ...iterable[Symbol.iterator] to be a function» — que es
-  // exactamente lo que salió en pantalla. Dejó de necesitar `await` cuando los trabajos
-  // pasaron a encolarse en vez de esperarse.
-  const printComandas = () => {
-    const tableInfo = {
-      table_number: order.table_number,
-      table_label: order.table_label ?? (
-        order.table_number 
-          ? `Mesa ${order.table_number}` 
-          : order.order_type === 'delivery'
-            ? `Delivery${order.customer_name ? ' - ' + order.customer_name : ''}`
-            : order.order_type === 'takeout'
-              ? `Takeout${order.customer_name ? ' - ' + order.customer_name : ''}`
-              : ''
-      ),
-      order_id: order.id
-    }
-
-    // Devuelve las promesas SIN esperarlas: quien llama las junta con las demás, para
-    // que cocina y barra no se esperen entre sí ni esperen a la caja.
-    const trabajos = []
-    if (printerCocina === printerBar) {
-      if (isPrinterActive(printerCocina)) {
-        trabajos.push(encolar(printerCocina,
-          () => printTableComanda(order, printerCocina, businessInfo, tableInfo)))
-      }
-    } else {
-      if (foodItems.length > 0 && isPrinterActive(printerCocina)) {
-        trabajos.push(encolar(printerCocina,
-          () => printKitchenComanda(foodItems, printerCocina, order, businessInfo, tableInfo)))
-      }
-      if (drinkItems.length > 0 && isPrinterActive(printerBar)) {
-        trabajos.push(encolar(printerBar,
-          () => printBarComanda(drinkItems, printerBar, order, businessInfo, tableInfo)))
-      }
-    }
-    return trabajos
-  }
+  // Las comandas de cocina y barra salen de `trabajos.js` (`crearComandas`): lo comparte la
+  // app de escritorio nativa (menuqr/desktop), que lo usa como COPIA LITERAL.
+  const printComandas = () => imprimirComandas(order, { printerCocina, printerBar, businessInfo })
 
   try {
     // Todos los trabajos se LANZAN a la vez, cada uno a la cola de SU impresora. Los de
@@ -872,15 +831,6 @@ function parseBody(req) {
 // copias significan que el papel del POS envuelto y el del navegador podrían traer
 // campos distintos sin que nada se ponga en rojo.
 
-/** Error de impresión que sabe con qué código HTTP debe contestar el servidor. */
-class PrintJobError extends Error {
-  constructor(message, httpStatus) {
-    super(message)
-    this.name = 'PrintJobError'
-    this.httpStatus = httpStatus
-  }
-}
-
 /** Impresora de caja configurada (puede no estar activa). */
 function cashierPrinterName() {
   const legacyPrinter = store.get('printerName', '')
@@ -896,96 +846,20 @@ function activeCashierPrinter() {
   return printerCaja
 }
 
-/**
- * Imprime uno de los tres documentos.
- * @param {'print-receipt'|'print-fiscal'|'print-closing'} endpoint
- * @param {object} data payload tal como lo manda el web
- * @returns {Promise<string>} resumen para el log (el caller le pone el prefijo del
- *          transporte: "HTTP: …" o "POS: …")
- */
-async function handlePrintJob(endpoint, data) {
-  const printerCaja = activeCashierPrinter()
+// El mapeo payload → plantilla vive en `trabajos.js`: lo comparte la app de escritorio
+// nativa (menuqr/desktop), que lo usa como COPIA LITERAL para imprimir el mismo papel.
+const imprimirComandas = crearComandas({
+  encolar,
+  estaActiva: isPrinterActive,
+  printer: { printTableComanda, printKitchenComanda, printBarComanda, isDrink },
+})
 
-  if (endpoint === 'print-receipt') {
-    const order = {
-      order_number: data.order_number,
-      table_label: data.table_label || null,
-      table_number: data.table_number || null,
-      order_type: data.order_type || null,
-      // Campos del cliente para el ticket de delivery/takeout (la plantilla los
-      // imprime como Cliente/Tel/Dir/Nota). Nombres idénticos a la BD/camino automático.
-      customer_name: data.customer_name || null,
-      customer_phone: data.customer_phone || null,
-      customer_address: data.customer_address || null,
-      // El whitelist de este mapeo es explícito: lo que no se liste NO llega a la
-      // plantilla por muy bien que lo mande el web. cashier_name faltaba, y por eso
-      // el "Cajero/a" no salía aunque el payload lo traía.
-      cashier_name: data.cashier_name || null,
-      notes: data.notes || null,
-      delivery_fee: data.delivery_fee || null,
-      items: (data.items || []).map(i => ({ name: i.name, qty: i.qty, price: i.price, subtotal: i.subtotal })),
-      subtotal: data.subtotal,
-      total: data.total,
-      tip_amount: data.tip_amount,
-      tip_pct: data.tip_pct,
-      // Desglose de ITBIS del recibo, YA calculado por el web. Si no se lista acá NO
-      // llega a la plantilla por muy bien que lo mande el web — es exactamente lo que
-      // pasó con cashier_name y costó tres rondas.
-      tax_base: data.tax_base ?? null,
-      itbis: data.itbis ?? null,
-      discount_amount: data.discount_amount,
-      discount_pct: data.discount_pct,
-      payment_method: data.payment_method,
-      // Recibido/Cambio: el ticket los muestra en cobros en efectivo (transparencia
-      // del cobro en la puerta). En el camino automático son columnas de pos_orders;
-      // aquí hay que listarlos o no llegan a la plantilla.
-      cash_given: data.cash_given ?? null,
-      card_amount: data.card_amount ?? null,
-      change_amount: data.change_amount ?? null,
-      created_at: data.date
-    }
-    const businessInfo = {
-      name: data.business_name || store.get('businessName', 'Mi Negocio'),
-      legalName: store.get('businessLegalName', ''),
-      rnc: store.get('businessRnc', ''),
-      ecfRnc: store.get('businessEcfRnc', ''),
-      address: store.get('businessAddress', ''),
-      currency: data.currency || store.get('businessCurrency', 'RD$'),
-      itbisEnabled: store.get('businessItbisEnabled', false),
-      showTaxBreakdown: store.get('businessShowTaxBreakdown', false)
-    }
-    console.log('[business] currency:', businessInfo.currency)
-    // Ruteo por order_type: delivery/takeout usan la plantilla que desglosa
-    // Subtotal + Envío + TOTAL; el resto (pos/mesa) sigue con el recibo POS.
-    // Por la MISMA cola que los trabajos de realtime: si no, un recibo por HTTP y una
-    // comanda por realtime podrían escribir a la vez en el mismo rollo e intercalarse.
-    if (data.order_type === 'delivery' || data.order_type === 'takeout') {
-      await encolar(printerCaja, () => printDeliveryTicket(order, printerCaja, businessInfo))
-    } else {
-      await encolar(printerCaja, () => printPOSReceipt(order, printerCaja, businessInfo))
-    }
-    return `Recibo impreso — Orden #${data.order_number}`
-  }
-
-  if (endpoint === 'print-fiscal') {
-    data.currency = data.currency || store.get('businessCurrency', 'RD$')
-    console.log('[business] currency:', data.currency)
-    await encolar(printerCaja, () => printFiscalReceipt(data, printerCaja))
-    return `Comprobante fiscal impreso — ${data.ncf || ''}`
-  }
-
-  if (endpoint === 'print-closing') {
-    data.business_name = data.business_name || store.get('businessName', 'Mi Negocio')
-    data.currency = data.currency || store.get('businessCurrency', 'RD$')
-    console.log('[business] currency:', data.currency)
-    await printClosingReport(data, printerCaja)
-    return `Cierre de caja impreso — ${data.closing_id || data.closed_at || ''}`
-  }
-
-  // Inalcanzable por los dos transportes (ambos filtran contra la misma lista antes
-  // de llegar aquí), pero un tercero futuro no puede colarse por defecto.
-  throw new PrintJobError(`endpoint de impresión desconocido: ${endpoint}`, 404)
-}
+const handlePrintJob = crearHandlePrintJob({
+  store,
+  impresoraCaja: activeCashierPrinter,
+  encolar,
+  printer: { printPOSReceipt, printDeliveryTicket, printFiscalReceipt, printClosingReport },
+})
 
 const PRINT_JOB_PATHS = new Set(['/print-receipt', '/print-fiscal', '/print-closing'])
 
