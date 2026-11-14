@@ -190,4 +190,22 @@ check('sin respaldo no hay papel provisional', () => {
   assert.equal(respaldoFiscal({ representacion: payloadConRespaldo.representacion }), null)
 })
 
+check('la nota de credito trae el e-NCF modificado y el motivo', () => {
+  // E340000015500, la primera nota certificada (anuló E320000015643 en pruebas, 2026-11-14).
+  const F = fiscalDesdeRepresentacion({ representacion: {
+    estado: 'aceptado', encf: 'E340000015500', tipo_ecf: '34', tipo_nombre: 'Nota de Crédito Electrónica',
+    ncf_modificado: 'E320000015643', razon_modificacion: 'Prueba de nota de credito TitiMenu',
+    lineas: [], totales: { total: '350.00' },
+  } })
+  assert.equal(F.titulo, 'Nota de Crédito Electrónica')
+  assert.equal(F.ncfModificado, 'E320000015643')
+  assert.equal(F.razonModificacion, 'Prueba de nota de credito TitiMenu')
+})
+
+check('una factura no trae renglones de nota', () => {
+  const F = fiscalDesdeRepresentacion({ representacion: { estado: 'aceptado', encf: 'E320000000001', tipo_nombre: 'Factura de Consumo Electrónica', lineas: [] } })
+  assert.equal(F.ncfModificado, '')
+  assert.equal(F.razonModificacion, '')
+})
+
 console.log(`\n${ok} comprobaciones` + (process.exitCode ? ' — CON FALLOS\n' : ' — todas OK\n'))

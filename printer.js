@@ -369,6 +369,12 @@ async function imprimirQrTermico(printer, url, paperWidth) {
  * Los importes de la representación se escriben **tal cual, en texto**: son los del
  * documento legal. Aquí NO se hace `total / 1.18` ni ninguna otra cuenta — ése era el bug.
  */
+/** Escapa texto para el papel HTML. El motivo de una nota de crédito lo escribe el cajero. */
+function escHtml(v) {
+  return String(v == null ? '' : v)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+}
+
 function fiscalDesdeRepresentacion(data) {
   const rep = data && data.representacion ? data.representacion : null
   if (!rep) return null
@@ -407,6 +413,11 @@ function fiscalDesdeRepresentacion(data) {
     emisorDireccion: rep.emisor_direccion || '',
     fechaEmision: rep.fecha_emision || '',
     venceSecuencia: rep.vence_secuencia || '',
+    // Nota de crédito (34): qué e-NCF modifica y por qué. La DGII exige que el papel de una
+    // nota diga qué factura anula o corrige. Mismos renglones que `TicketBuilder.buildEcf` del
+    // módulo compartido y que `htmlFiscal` del web. En una factura llegan vacíos y no se pintan.
+    ncfModificado: rep.ncf_modificado || '',
+    razonModificacion: rep.razon_modificacion || '',
     compradorNombre: rep.comprador_nombre || '',
     compradorRnc: rep.comprador_rnc || '',
     lineas: (rep.lineas || []).map(l => ({
@@ -1371,6 +1382,8 @@ async function generateFiscalReceiptHTML(data, paperWidth) {
     <table class="totals-table"><tbody>
       ${(F.fechaEmision || (R ? R.fecha : '')) ? `<tr><td>Fecha emisión:</td><td class="right">${F.fechaEmision || R.fecha}</td></tr>` : ''}
       ${F.venceSecuencia ? `<tr><td>Vence secuencia:</td><td class="right">${F.venceSecuencia}</td></tr>` : ''}
+      ${F.ncfModificado ? `<tr><td><b>e-NCF modificado:</b></td><td class="right"><b>${escHtml(F.ncfModificado)}</b></td></tr>` : ''}
+      ${F.razonModificacion ? `<tr><td>Motivo:</td><td class="right">${escHtml(F.razonModificacion)}</td></tr>` : ''}
       ${F.compradorNombre ? `<tr><td>Cliente:</td><td class="right">${F.compradorNombre}</td></tr>` : ''}
       ${F.compradorRnc ? `<tr><td>RNC/Cédula:</td><td class="right">${F.compradorRnc}</td></tr>` : ''}
     </tbody></table>
@@ -2341,6 +2354,12 @@ async function printFiscalReceipt(data, printerName) {
     const fechaCab = F.fechaEmision || (Rh ? Rh.fecha : '')
     if (fechaCab) printer.println(`Fecha emision: ${fechaCab}`)
     if (F.venceSecuencia) printer.println(`Vence secuencia: ${F.venceSecuencia}`)
+    if (F.ncfModificado) {
+      printer.bold(true)
+      printer.println(`e-NCF modificado: ${F.ncfModificado}`)
+      printer.bold(false)
+    }
+    if (F.razonModificacion) printer.println(`Motivo: ${F.razonModificacion}`)
     if (F.compradorNombre) printer.println(`Cliente: ${F.compradorNombre}`)
     if (F.compradorRnc) printer.println(`RNC/Cedula: ${F.compradorRnc}`)
     printer.println(DASH)
