@@ -27,6 +27,17 @@ const store = new Store()
 const { BrowserWindow, Notification } = require('electron')
 const { ensureQueueHealthy, vigilarColas } = require('./printQueue')
 const { enviarPorHost } = require('./spoolerWin')
+const { esBluetooth, listarBluetooth, enviarPorBluetooth } = require('./bluetooth')
+
+/**
+ * ¿Este trabajo va por el modo «Sistema OS / HTML»? Una impresora Bluetooth NUNCA: no es una
+ * impresora del sistema, es un puerto serie, y solo entiende ESC/POS. Sin esta excepción, con
+ * el modo sistema elegido para OTRA impresora el ticket de la Bluetooth se mandaría a una cola
+ * que no existe.
+ */
+function modoSistema(printMode, printerName) {
+  return printMode === 'system' && !esBluetooth(printerName)
+}
 
 // Descartar trabajos encolados no puede ser silencioso: son ventas ya cobradas cuyo
 // recibo no va a salir nunca. Va al log y a una notificación del sistema, porque quien
@@ -106,6 +117,9 @@ async function getUSBPrinters() {
   } catch (err) {
     console.error('Error listing printers:', err.message)
   }
+
+  // Las Bluetooth emparejadas no son impresoras del sistema: se listan aparte (bluetooth.js).
+  printers.push(...await listarBluetooth())
 
   // Always append test mode option at the end
   printers.push({ name: TEST_PRINTER_NAME, displayName: 'Modo prueba (sin impresora)' })
@@ -683,6 +697,11 @@ async function createPrinter(printerName) {
 
 async function sendRawToPrinter(buffer, printerName, crono) {
   console.log(`[sendRawToPrinter] Enviando ${buffer.length} bytes a la impresora: ${printerName}`)
+  // Bluetooth: directo al puerto serie, sin spooler — ni cola que vigilar ni que purgar.
+  if (esBluetooth(printerName)) {
+    if (crono) crono.etapa('cola')
+    return await enviarPorBluetooth(buffer, printerName)
+  }
   // Tope de la cola del sistema. Va aquí —en el punto donde el trabajo ENTRA al
   // spooler— y no en cada llamador, para que lo respeten los tres caminos por igual:
   // el realtime, el HTTP y el IPC del POS. Ver printQueue.js.
@@ -1564,7 +1583,7 @@ async function printPOSReceipt(order, printerName, businessInfo) {
   const crono = cronometro('pos', order.order_number ? `#${order.order_number}` : '')
   crono.origen(order.created_at)
 
-  if (printMode === 'system') {
+  if (modoSistema(printMode, printerName)) {
     const html = generatePOSReceiptHTML(order, businessInfo, paperWidth)
     await printHTML(html, printerName)
     return
@@ -1887,7 +1906,7 @@ async function printTableComanda(order, printerName, businessInfo, tableInfo = {
   const crono = cronometro('comanda-mesa', '')
   crono.origen(order && order.created_at)
 
-  if (printMode === 'system') {
+  if (modoSistema(printMode, printerName)) {
     const html = generateTableComandaHTML(order, businessInfo, paperWidth, tableInfo)
     await printHTML(html, printerName)
     return
@@ -1997,7 +2016,7 @@ async function printDeliveryTicket(order, printerName, businessInfo) {
   const crono = cronometro('delivery', order.order_number ? `#${order.order_number}` : '')
   crono.origen(order.created_at)
 
-  if (printMode === 'system') {
+  if (modoSistema(printMode, printerName)) {
     const html = generateDeliveryTicketHTML(order, businessInfo, paperWidth)
     await printHTML(html, printerName)
     return
@@ -2151,7 +2170,7 @@ async function printTestPage(printerName, businessName) {
   const printMode = store.get('printMode', 'thermal')
   const paperWidth = store.get('paperWidth', '80mm')
 
-  if (printMode === 'system') {
+  if (modoSistema(printMode, printerName)) {
     const html = generateTestReceiptHTML(businessName, paperWidth)
     await printHTML(html, printerName)
     return
@@ -2245,7 +2264,7 @@ async function printFiscalReceipt(data, printerName) {
   const crono = cronometro('fiscal', data.ncf || '')
   crono.origen(data.created_at)
 
-  if (printMode === 'system') {
+  if (modoSistema(printMode, printerName)) {
     const html = await generateFiscalReceiptHTML(data, paperWidth)
     await printHTML(html, printerName)
     return
@@ -2526,7 +2545,7 @@ async function printStationComanda(stationTitle, items, printerName, orderInfo, 
   const destino = etiquetaDestino(tableInfo, orderInfo)
   const shortId = (tableInfo?.order_id || orderInfo.id || orderInfo.order_number || '000000').slice(-6).toUpperCase()
 
-  if (printMode === 'system') {
+  if (modoSistema(printMode, printerName)) {
     const html = generateStationComandaHTML(stationTitle, items, orderInfo, paperWidth, tableInfo)
     await printHTML(html, printerName)
     return
@@ -2717,7 +2736,7 @@ async function printClosingReport(data, printerName) {
     return
   }
 
-  if (printMode === 'system') {
+  if (modoSistema(printMode, printerName)) {
     const html = generateClosingReportHTML(data, bizName, currency)
     await printHTML(html, printerName)
     return
